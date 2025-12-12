@@ -61,7 +61,7 @@ class EpisodicBuffer:
         :param episode: Episode object.
         :type episode: cognitive_node_interfaces.msg.Episode
         """
-        self.node.get_logger().info(f"Updating labels for episodic buffer: {episode}")
+        self.node.get_logger().debug(f"Updating labels for episodic buffer: {episode}")
         new_input_labels = []
         new_output_labels = []
         self._extract_labels(self.inputs, episode, new_input_labels)
@@ -189,31 +189,34 @@ class EpisodicBuffer:
         else:
             return self.secondary_buffer[index]
 
-    def get_dataset(self, shuffle=False):
+    def get_dataset(self, shuffle=False, n_samples=None):
         """
         Returns the dataset as numpy arrays.
         If shuffle=True, shuffles the arrays before returning.
+        If n_samples is provided, returns at most n_samples rows (sampled without replacement).
         """
-        x_train, y_train = self._get_samples_from_buffer(self.main_buffer, shuffle=shuffle)
-        x_test, y_test = self._get_samples_from_buffer(self.secondary_buffer, shuffle=shuffle)
+        x_train, y_train = self._get_samples_from_buffer(self.main_buffer, shuffle=shuffle, n_samples=n_samples)
+        x_test, y_test = self._get_samples_from_buffer(self.secondary_buffer, shuffle=shuffle, n_samples=n_samples)
         return x_train, y_train, x_test, y_test
 
 
-    def get_train_samples(self, shuffle=False):
+    def get_train_samples(self, shuffle=False, n_samples=None):
         """
         Returns the training samples as lists of input and output dicts.
         :return: (inputs, outputs) where each is a numpy array
         If shuffle=True, shuffles the arrays before returning.
+        If n_samples is provided, returns at most n_samples rows.
         """
-        return self._get_samples_from_buffer(self.main_buffer, shuffle=shuffle)
+        return self._get_samples_from_buffer(self.main_buffer, shuffle=shuffle, n_samples=n_samples)
 
-    def get_test_samples(self, shuffle=False):
+    def get_test_samples(self, shuffle=False, n_samples=None):
         """
         Returns the test samples as lists of input and output dicts.
         :return: (inputs, outputs) where each is a numpy array
         If shuffle=True, shuffles the arrays before returning.
+        If n_samples is provided, returns at most n_samples rows.
         """
-        return self._get_samples_from_buffer(self.secondary_buffer, shuffle=shuffle)
+        return self._get_samples_from_buffer(self.secondary_buffer, shuffle=shuffle, n_samples=n_samples)
     
     def get_dataframes(self):
         """
@@ -386,18 +389,29 @@ class EpisodicBuffer:
         buffer = [EpisodicBuffer.vector_to_episode(row, labels) for row in matrix]
         return buffer
 
-    def _get_samples_from_buffer(self, buffer, shuffle=False):
+    def _get_samples_from_buffer(self, buffer, shuffle=False, n_samples=None):
         """
         Internal helper to get (inputs, outputs) numpy arrays from a buffer.
         If shuffle=True, shuffles the arrays before returning.
+        If n_samples is provided, returns at most n_samples rows sampled without replacement.
         """
         inputs = self.buffer_to_matrix(buffer, self.input_labels)
         if self.output_labels:
             outputs = self.buffer_to_matrix(buffer, self.output_labels)
         else:
-            outputs = []
+            outputs = np.empty((inputs.shape[0], 0)) if inputs.size else np.empty((0,0))
+
         if shuffle:
             inputs, outputs = self._shuffle_dataset(inputs, outputs)
+
+        # If requested, sample up to n_samples without replacement using the object's RNG
+        if n_samples is not None:
+            total = inputs.shape[0]
+            if total > n_samples:
+                idx = self.rng.choice(total, size=n_samples, replace=False)
+                inputs = inputs[idx]
+                if outputs.size:
+                    outputs = outputs[idx]
         return inputs, outputs
 
     def _shuffle_dataset(self, inputs, outputs):
@@ -416,7 +430,6 @@ class EpisodicBuffer:
                     dims = dims_list[0]
                     for dim in dims:
                         label_list.append(f"{io}:{group}:{dim}")
-                label_list.append(f"{io}:policy:id")
             elif isinstance(io_obj, str):
                 label_list.append(io)
             
@@ -455,12 +468,11 @@ class TraceBuffer(EpisodicBuffer):
             utility_trace = self.evaluate_trace(reward)
             self.traces_buffer.append(list(zip(self.main_buffer, utility_trace)))
             self.new_traces += 1
-            self.node.get_logger().info(f"Adding trace with {self.main_size} episodes")
+            self.node.get_logger().info(f"Adding trace with {self.main_size} episodes. New traces: {self.new_traces}")
             self.clear()
         elif self.new_sample_count_main == self.main_max_size and self.n_traces > self.min_traces: # If the buffer is full, and there are enough traces, add an antitrace
             self.node.get_logger().info("Adding antitrace")
             self.antitraces_buffer.append(list(zip(self.main_buffer, np.zeros(self.main_max_size))))
-            self.new_traces += 1
             self.clear()
 
     def evaluate_trace(self, reward):
@@ -471,8 +483,16 @@ class TraceBuffer(EpisodicBuffer):
         values = getattr(self, f"eval_{self.evaluation_method}", self.eval_default)(reward, min_val, n, self.main_max_size)
         return values
       
-    def get_dataset(self, shuffle=True):
-        flattened_traces = [item for trace in self.traces_buffer for item in trace]
+    def get_dataset(self, shuffle=True, n_samples=None):
+        if n_samples is not None:
+            if len(self.traces_buffer) > n_samples:
+                idx = self.rng.choice(len(self.traces_buffer), size=n_samples, replace=False)
+                selected_traces = [self.traces_buffer[i] for i in idx]
+            else:
+                selected_traces = list(self.traces_buffer)
+        else:
+            selected_traces = list(self.traces_buffer)
+        flattened_traces = [item for trace in selected_traces for item in trace]
         buffer, utilities = zip(*flattened_traces) if flattened_traces else ([], [])
         utilities = np.array(utilities)
         states, _ = self._get_samples_from_buffer(buffer, shuffle=False)
@@ -490,8 +510,9 @@ class TraceBuffer(EpisodicBuffer):
             """
             self.new_traces = 0
 
-    def eval_default(self, reward, min_val, n, full_length):
-        raise NotImplementedError(f"Evaluation method '{self.evaluation_method}' is not implemented.")
+    @staticmethod
+    def eval_default(reward, min_val, n, full_length):
+        raise NotImplementedError(f"Evaluation method requested is not implemented.")
 
     @staticmethod
     def eval_linear(reward, min_val, n, full_length):
@@ -538,9 +559,15 @@ class TraceBuffer(EpisodicBuffer):
             value = min_val * np.exp(k * position)
             values.append(value)
         values.append(reward)
-        
         return values
     
+    @staticmethod
+    def eval_goal_only(reward, min_val, n, full_length):
+        """
+        Goal only evaluation function: f(x) = reward if x == n-1 else 0
+        """
+        values = [0.0] * (n - 1) + [reward]
+        return values
 
     @property
     def max_traces(self):

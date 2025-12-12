@@ -4,7 +4,7 @@ from copy import deepcopy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 
-from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, Evaluator
+from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, ANNLearner_torch, Evaluator
 from cognitive_nodes.episodic_buffer import EpisodicBuffer
 from simulators.scenarios_2D import SimpleScenario, EntityType
 from cognitive_node_interfaces.msg import Perception, Actuation, SuccessRate
@@ -47,7 +47,7 @@ class WorldModelLearned(WorldModel):
     """
     WorldModelLearned class: A world model that uses episodes to learn the dynamics of the world.
     """
-    def __init__(self, name='world_model', class_name='cognitive_nodes.world_model.WorldModel', episodes_topic=None, retrain=True, **params):
+    def __init__(self, name='world_model', class_name='cognitive_nodes.world_model.WorldModel', episodes_topic=None,  main_size=2000, secondary_size=50, train_sample=200, train_split=0.80, validation_split=0.1, retrain=True, learner_params={}, **params):
         """
         Constructor of the WorldModelLearned class.
 
@@ -70,23 +70,25 @@ class WorldModelLearned(WorldModel):
             self.episodes_topic,
             self.episode_callback,
             10,
-            callback_group=self.cbgroup_episodes
+            callback_group=self.cbgroup_server
         )
 
         self.episodic_buffer = EpisodicBuffer(
             node = self,
-            main_size= 200,
-            secondary_size= 50,
-            train_split= 0.80,
+            main_size= main_size,
+            secondary_size= secondary_size,
+            train_split= train_split,
             inputs = ["old_perception", "action"],
             outputs = ["perception"],
         )
 
-        self.learner = ANNLearner(self, self.episodic_buffer, **params)
+        self.learner = ANNLearner_torch(self, self.episodic_buffer, **learner_params)
 
         self.confidence_evaluator = EvaluatorWorldModel(self, self.learner, self.episodic_buffer)
 
         self.retrain = retrain
+        self.train_sample = train_sample
+        self.validation_split = validation_split
 
     def predict(self, input_episodes: list[Episode]) -> list[Episode]:
         if not self.episodic_buffer.input_labels or not self.episodic_buffer.output_labels:
@@ -97,6 +99,7 @@ class WorldModelLearned(WorldModel):
         self.get_logger().info(f"Data for prediction: {input_data.shape} samples. Ex: {input_data[:2]}")
         predictions = self.learner.call(input_data)
         if predictions is None:
+            self.get_logger().warning("No predictions were made by the learner. Returning the old perceptions.")
             for episode in input_episodes:
                 episode.perception = episode.old_perception  # If the model is not configured, return the old perception
             predicted_episodes = input_episodes  # If the model is not configured, return the input episodes
@@ -116,25 +119,29 @@ class WorldModelLearned(WorldModel):
             :type msg: cognitive_node_interfaces.msg.Episode
             """
             episode = episode_msg_to_obj(msg)
-            self.episodic_buffer.add_episode(episode)
-            self.get_logger().info(f"Episode added to buffer \n New train samples: {self.episodic_buffer.new_sample_count_main}, New test samples: {self.episodic_buffer.new_sample_count_secondary}")
+            if episode.parent_policy != "reset_world":
+                self.episodic_buffer.add_episode(episode)
+                self.get_logger().info(f"Episode added to buffer \n New train samples: {self.episodic_buffer.new_sample_count_main}, New test samples: {self.episodic_buffer.new_sample_count_secondary}")
 
-            # TODO: Allow to train the learner in different moments, not only when the main buffer is full
-            # If the main buffer is full, train the learner
-            if self.episodic_buffer.new_sample_count_main >= self.episodic_buffer.main_max_size:
-                if not self.learner.configured or self.retrain:   
-                    self.get_logger().info("Training the learner with the new episodes")
-                    x_train, y_train = self.episodic_buffer.get_train_samples(shuffle=True)
-                    self.learner.train(x_train, y_train)
-                    self.episodic_buffer.reset_new_sample_count(main=True, secondary=False)
-                    self.get_logger().info("Learner trained with new episodes")
+                
+                # Train the buffer every train samples, but only if the main buffer is full
+                if self.episodic_buffer.main_size == self.episodic_buffer.main_max_size and self.episodic_buffer.new_sample_count_main >= self.train_sample:
+                    if not self.learner.configured or self.retrain:   
+                        sample_size = max(self.train_sample, self.episodic_buffer.new_sample_count_main)
+                        self.get_logger().info(f"Training the learner with {sample_size} new episodes")
+                        x_train, y_train = self.episodic_buffer.get_train_samples(shuffle=True, n_samples=sample_size)
+                        self.learner.train(x_train, y_train, validation_split=self.validation_split)
+                        self.episodic_buffer.reset_new_sample_count(main=True, secondary=False)
+                        self.get_logger().info("Learner trained with new episodes")
 
-            if self.episodic_buffer.new_sample_count_secondary >= self.episodic_buffer.secondary_max_size and self.learner.configured:
-                self.get_logger().info("Evaluating the learner with the new episodes")
-                self.confidence_evaluator.evaluate()
-                self.confidence_evaluator.publish_prediction_error()
-                self.episodic_buffer.reset_new_sample_count(main=False, secondary=True)
-                self.get_logger().info("Learner evaluated with new episodes")
+                if self.episodic_buffer.new_sample_count_secondary >= self.episodic_buffer.secondary_max_size and self.learner.configured:
+                    self.get_logger().info("Evaluating the learner with the new episodes")
+                    self.confidence_evaluator.evaluate()
+                    self.confidence_evaluator.publish_prediction_error()
+                    self.episodic_buffer.reset_new_sample_count(main=False, secondary=True)
+                    self.get_logger().info("Learner evaluated with new episodes")
+            else:
+                self.get_logger().info("Reset world episode received. Episode not added to buffer.")
 
     
     
@@ -267,6 +274,7 @@ class Sim2D(Learner):
         #GRASP OBJECT IF GRIPPER IS CLOSE
         grippers_close = self.model.filter_entities(self.model.get_close_entities(self.model.robots[0], threshold=250), EntityType.ROBOT)
         self.logger.debug(f"DEBUG - {[ent.name for ent in grippers_close]}")
+        # released = False
         if grippers_close and not self.changed_grippers and (self.model.robots[0].catched_object or self.model.robots[1].catched_object): #If grippers are close, change hands
             self.logger.debug(f"DEBUG - Checking if changing grippers is possible")
             #Ball in left gripper
@@ -305,10 +313,12 @@ class Sim2D(Learner):
             left_over_box = self.model.filter_entities(self.model.get_close_entities(self.model.robots[0], threshold=50), EntityType.BOX)
             right_over_box = self.model.filter_entities(self.model.get_close_entities(self.model.robots[1], threshold=50), EntityType.BOX)
             if left_over_box:
-                self.logger.debug(f"DEBUG - Boxes {[box.name for box in left_over_box]} detected close to left gripper")
+                self.logger.info(f"DEBUG - Boxes {[box.name for box in left_over_box]} detected close to left gripper")
+                # released = True
                 gripper_l = False
             if right_over_box:
-                self.logger.debug(f"DEBUG - Boxes {[box.name for box in right_over_box]} detected close to right gripper")
+                self.logger.info(f"DEBUG - Boxes {[box.name for box in right_over_box]} detected close to right gripper")
+                # released = True
                 gripper_r = False
             
             self.model.apply_action(gripper_left=gripper_l, gripper_right=gripper_r)
@@ -339,6 +349,10 @@ class Sim2D(Learner):
 
         perc_dict["ball"][0]["x"] = float(ball[0])
         perc_dict["ball"][0]["y"] = float(ball[1])
+
+        # if released:
+        #     self.logger.info(f"DEBUG - PERCEPTION DICT: {perc_dict}")
+        #     self.logger.info(f"DEBUG - PERCEPTION DICT: {self.normalize(perc_dict, self.perception_config)}")
 
         return self.normalize(perc_dict, self.perception_config)
 

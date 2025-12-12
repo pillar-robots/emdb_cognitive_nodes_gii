@@ -11,7 +11,7 @@ from cognitive_nodes.episode import Episode, episode_msg_to_obj, episode_msg_lis
 from cognitive_nodes.episodic_buffer import EpisodicBuffer, TraceBuffer
 from cognitive_processes.deliberation import Deliberation
 
-from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, Evaluator
+from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, ANNLearner_torch, Evaluator
 from cognitive_node_interfaces.srv import Execute, AddTrace
 import pandas as pd
 
@@ -154,8 +154,8 @@ class HardCodedUtilityModel(UtilityModel):
             left_arm_to_ball = episode.perception["dist_left_arm_ball"][0]["distance"]
             right_arm_to_ball = episode.perception["dist_right_arm_ball"][0]["distance"]
             ball_to_box = episode.perception["dist_ball_box"][0]["distance"]
-            ball_in_left_hand = isclose(left_arm_to_ball, 0.0, abs_tol=0.005)
-            ball_in_right_hand = isclose(right_arm_to_ball, 0.0, abs_tol=0.005)
+            ball_in_left_hand = isclose(left_arm_to_ball, 0.0, abs_tol=0.025)
+            ball_in_right_hand = isclose(right_arm_to_ball, 0.0, abs_tol=0.025)
 
             # Calculate angles (denormalize from [0, 1] to [-1, 1] and then to radians)
             left_arm_to_ball_angle_sin = episode.perception["dist_left_arm_ball"][0]["angle_sin"]*2 - 1.0 # Denormalize from [0, 1] to [-1, 1]  
@@ -252,7 +252,23 @@ class HardCodedUtilityModel(UtilityModel):
         return out
 
 class LearnedUtilityModel(UtilityModel):
-    def __init__(self, name='utility_model', class_name='cognitive_nodes.utility_model.UtilityModel', prediction_srv_type="cognitive_node_interfaces.srv.PredictUtility", trace_length=20, max_iterations=20, candidate_actions=5, min_traces=5, max_traces=50, max_antitraces=10, ltm_id="", **params):
+
+    def __init__(
+        self,
+        name="utility_model",
+        class_name="cognitive_nodes.utility_model.UtilityModel",
+        prediction_srv_type="cognitive_node_interfaces.srv.PredictUtility",
+        trace_length=20,
+        max_iterations=20,
+        candidate_actions=5,
+        min_traces=5,
+        max_traces=50,
+        max_antitraces=10,
+        train_traces=5,
+        validation_split=0.1,
+        ltm_id="",
+        **params,
+    ):
         super().__init__(
             name=name,
             class_name=class_name,
@@ -284,6 +300,9 @@ class LearnedUtilityModel(UtilityModel):
             callback_group=self.cbgroup_server
         )
 
+        self.train_traces = train_traces
+        self.validation_split = validation_split
+
         self.get_logger().info(f"Utility Model created: {self.name}")
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, min_traces=1, max_traces=50, max_antitraces=10, **params):
@@ -291,7 +310,7 @@ class LearnedUtilityModel(UtilityModel):
         Sets up the Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
         """
         self.episodic_buffer = TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_traces=min_traces, max_antitraces=max_antitraces, inputs=['perception'], outputs=[], **params)
-        self.learner = ANNLearner(self, self.episodic_buffer, **params)
+        self.learner = ANNLearner_torch(self, self.episodic_buffer, **params)
         self.alternative_learner = NoveltyUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
         self.deliberation = Deliberation(f"{self.name}_deliberation", self, iterations=max_iterations, candidate_actions=candidate_actions, LTM_id=ltm_id, clear_buffer=True, **params)
@@ -310,8 +329,9 @@ class LearnedUtilityModel(UtilityModel):
     def execute_callback(self, request, response):
         response = super().execute_callback(request, response)
         self.get_logger().info(f"Total traces: {self.episodic_buffer.n_traces}, Total antitraces: {self.episodic_buffer.n_antitraces} New traces: {self.episodic_buffer.new_traces}, Min traces: {self.min_traces} {self.episodic_buffer.min_traces}")
-        if self.episodic_buffer.new_traces > self.min_traces:
-            x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True)
+        if self.episodic_buffer.n_traces == self.episodic_buffer.max_traces and self.episodic_buffer.new_traces >= self.train_traces:
+            sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
+            x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True, n_samples=sample_size)
             self.learner.train(x_train, y_train)
             self.episodic_buffer.reset_new_sample_count()
         return response
@@ -326,9 +346,11 @@ class LearnedUtilityModel(UtilityModel):
             if any(rewards):
                 self.get_logger().info(f"New trace added to episodic buffer. Total traces: {self.episodic_buffer.n_traces}, Min traces: {self.episodic_buffer.min_traces}")
                 self.deliberation.update_pnodes_reward_basis(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache)
-                if self.episodic_buffer.new_traces > self.min_traces:
-                    x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True)
-                    self.learner.train(x_train, y_train)
+                if self.episodic_buffer.n_traces == self.episodic_buffer.max_traces and self.episodic_buffer.new_traces >= self.train_traces:
+                    sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
+                    self.get_logger().info(f"Training Utility Model with {sample_size} new traces")
+                    x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True, n_samples=sample_size)
+                    self.learner.train(x_train, y_train, validation_split=self.validation_split)
                     self.episodic_buffer.reset_new_sample_count()
         elif msg.parent_policy == "reset_world":
             self.get_logger().info("World reset detected, clearing buffer")
