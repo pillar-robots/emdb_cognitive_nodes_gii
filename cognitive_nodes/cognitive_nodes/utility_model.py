@@ -109,7 +109,7 @@ class NoveltyUtilityModel(UtilityModel):
         super().__init__(name=name, class_name=class_name, prediction_srv_type=prediction_srv_type, trace_length=trace_length, max_iterations=max_iterations, candidate_actions=candidate_actions, ltm_id=ltm_id, min_traces=min_traces, max_traces=max_traces, max_antitraces=max_antitraces, **params)
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, train_traces=1, max_traces=50, **params):
-        self.episodic_buffer = TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_p_traces=train_traces, inputs=['perception'], outputs=[], **params)
+        self.episodic_buffer = EpisodicBuffer(self, main_size=trace_length, secondary_size=0, train_split=1.0, inputs=['perception'], outputs=[], **params)
         self.learner = NoveltyUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
         self.deliberation = Deliberation(f"{self.name}_deliberation", self, iterations=max_iterations, candidate_actions=candidate_actions, LTM_id=ltm_id, clear_buffer=False, exploration_process=True, **params)
@@ -266,6 +266,7 @@ class LearnedUtilityModel(UtilityModel):
         max_antitraces=10,
         train_traces=5,
         validation_split=0.1,
+        reward_factor=1.0,
         ltm_id="",
         **params,
     ):
@@ -280,6 +281,7 @@ class LearnedUtilityModel(UtilityModel):
             min_traces=min_traces,
             max_traces=max_traces,
             max_antitraces=max_antitraces,
+            reward_factor=reward_factor,
             **params,
         )
         self.min_traces = float(min_traces)
@@ -311,7 +313,7 @@ class LearnedUtilityModel(UtilityModel):
         """
         self.episodic_buffer = TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_traces=min_traces, max_antitraces=max_antitraces, inputs=['perception'], outputs=[], **params)
         self.learner = ANNLearner_torch(self, self.episodic_buffer, **params)
-        self.alternative_learner = NoveltyUtilityModelLearner(self, self.episodic_buffer, **params)
+        self.alternative_learner = DefaultUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
         self.deliberation = Deliberation(f"{self.name}_deliberation", self, iterations=max_iterations, candidate_actions=candidate_actions, LTM_id=ltm_id, clear_buffer=True, **params)
         self.spin_deliberation()
@@ -326,14 +328,18 @@ class LearnedUtilityModel(UtilityModel):
         self.get_logger().info(f"Predictions: {predictions}")
         return predictions
 
+    def train_step(self):
+        if self.episodic_buffer.n_traces >= self.min_traces and self.episodic_buffer.new_traces >= self.train_traces:
+            sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
+            self.get_logger().info(f"Training Utility Model with {sample_size} new traces")
+            x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True, n_samples=sample_size)
+            self.learner.train(x_train, y_train, validation_split=self.validation_split)
+            self.episodic_buffer.reset_new_sample_count()
+
     def execute_callback(self, request, response):
         response = super().execute_callback(request, response)
         self.get_logger().info(f"Total traces: {self.episodic_buffer.n_traces}, Total antitraces: {self.episodic_buffer.n_antitraces} New traces: {self.episodic_buffer.new_traces}, Min traces: {self.min_traces} {self.episodic_buffer.min_traces}")
-        if self.episodic_buffer.n_traces == self.episodic_buffer.max_traces and self.episodic_buffer.new_traces >= self.train_traces:
-            sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
-            x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True, n_samples=sample_size)
-            self.learner.train(x_train, y_train)
-            self.episodic_buffer.reset_new_sample_count()
+        self.train_step()
         return response
 
     def episode_callback(self, msg):
@@ -346,12 +352,7 @@ class LearnedUtilityModel(UtilityModel):
             if any(rewards):
                 self.get_logger().info(f"New trace added to episodic buffer. Total traces: {self.episodic_buffer.n_traces}, Min traces: {self.episodic_buffer.min_traces}")
                 self.deliberation.update_pnodes_reward_basis(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache)
-                if self.episodic_buffer.n_traces == self.episodic_buffer.max_traces and self.episodic_buffer.new_traces >= self.train_traces:
-                    sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
-                    self.get_logger().info(f"Training Utility Model with {sample_size} new traces")
-                    x_train, y_train = self.episodic_buffer.get_dataset(shuffle=True, n_samples=sample_size)
-                    self.learner.train(x_train, y_train, validation_split=self.validation_split)
-                    self.episodic_buffer.reset_new_sample_count()
+                self.train_step()
         elif msg.parent_policy == "reset_world":
             self.get_logger().info("World reset detected, clearing buffer")
             self.episodic_buffer.clear()
@@ -363,6 +364,171 @@ class LearnedUtilityModel(UtilityModel):
             self.episodic_buffer.add_episode(episode, reward)
         response.added = True
         return response
+
+
+class DummyUtilityModel(LearnedUtilityModel):
+    """
+    Dummy Utility Model class
+    This model is used as a placeholder and does not perform any actual utility computation.
+    It inherits from the UtilityModel class.
+    """
+    def __init__(self, name='dummy_utility_model', class_name='cognitive_nodes.utility_model.UtilityModel', prediction_srv_type="cognitive_node_interfaces.srv.PredictUtility", trace_length=20, max_iterations=20, candidate_actions=5, ltm_id="", **params):
+        super().__init__(name=name, class_name=class_name, prediction_srv_type=prediction_srv_type, trace_length=trace_length, max_iterations=max_iterations, candidate_actions=candidate_actions, ltm_id=ltm_id, **params)
+
+    def calculate_activation(self, perception=None, activation_list=None):
+        self.activation.activation = 0.0
+        self.activation.timestamp = self.get_clock().now().to_msg()
+        return self.activation
+
+class QUtilityModel(LearnedUtilityModel):
+    def __init__(
+            self, 
+            name="utility_model", 
+            class_name="cognitive_nodes.utility_model.UtilityModel", 
+            prediction_srv_type="cognitive_node_interfaces.srv.PredictUtility", 
+            trace_length=20, 
+            max_iterations=20, 
+            candidate_actions=5, 
+            min_traces=5, 
+            max_traces=50, 
+            max_antitraces=10, 
+            train_traces=5, 
+            train_every=1,
+            replace_every=5,
+            discount_factor=0.90,
+            validation_split=0.1, 
+            reward_factor=1.0,
+            ltm_id="", 
+            **params
+            ):
+        super().__init__(
+            name=name, 
+            class_name=class_name, 
+            prediction_srv_type=prediction_srv_type, 
+            trace_length=trace_length, 
+            max_iterations=max_iterations, 
+            candidate_actions=candidate_actions, 
+            min_traces=min_traces, 
+            max_traces=max_traces, 
+            max_antitraces=max_antitraces, 
+            train_traces=train_traces, 
+            validation_split=validation_split, 
+            reward_factor=reward_factor,
+            ltm_id=ltm_id, 
+            **params
+            )
+        
+        self.candidate_actions = candidate_actions
+        self.train_every = train_every
+        self.replace_every = replace_every
+        self.discount_factor = discount_factor
+        self.train_step_count = 0
+
+
+    def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, min_traces=1, max_traces=50, max_antitraces=10, **params):
+        """
+        Sets up the Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
+        """
+        self.episodic_buffer = TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_traces=min_traces, max_antitraces=max_antitraces, inputs=['perception'], outputs=[], **params)
+        self.learner = ANNLearner_torch(self, self.episodic_buffer, **params)
+        self.target_learner = ANNLearner_torch(self, self.episodic_buffer, **params)
+        self.alternative_learner = DefaultUtilityModelLearner(self, self.episodic_buffer, **params)
+        self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
+        self.deliberation = Deliberation(f"{self.name}_deliberation", self, iterations=max_iterations, candidate_actions=candidate_actions, LTM_id=ltm_id, clear_buffer=True, **params)
+        self.spin_deliberation()
+    
+    def train_step(self):
+        if self.episodic_buffer.n_traces >= self.min_traces and self.episodic_buffer.new_traces >= self.train_every:
+            # Initialize both learners if not configured
+            if not self.learner.configured:
+                x_train, rewards = self.episodic_buffer.get_dataset()
+                rewards = rewards.reshape(-1, 1)
+                self.learner.configure_model(x_train.shape[1], rewards.shape[1])
+                self.target_learner.configure_model(x_train.shape[1], rewards.shape[1])
+                weights = self.learner.get_weights()
+                self.target_learner.set_weights(weights)
+
+            # Train every fixed number of episodes when buffer is full
+            sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
+            self.get_logger().info(
+                f"Training on {sample_size} new traces. Total traces: {self.episodic_buffer.n_traces}"
+            )
+            episodes, rewards = self.episodic_buffer.get_flattened_traces(n_samples=sample_size)
+            x_train = self.episodic_buffer.buffer_to_matrix(episodes, self.episodic_buffer.input_labels)
+
+            # Compute target Q-values
+            candidate_states_actions = self.generate_candidates_matrix(episodes)
+            if self.deliberation.current_world is None:
+                self.deliberation.current_world = self.deliberation.get_linked_world_model()[0]
+            next_states = self.deliberation.predict_perceptions(self.deliberation.current_world, candidate_states_actions)
+            q_values_next = self.predict(next_states, target_learner=True)
+            max_q_values_next = self.obtain_maximum_value(q_values_next)
+            y_train = np.array([reward + self.discount_factor * max_q if not isclose(reward, 1.0) else reward for reward, max_q in zip(rewards, max_q_values_next)])
+
+            # Train the learner with the computed Q-values
+            x_train, y_train = self.episodic_buffer._shuffle_dataset(x_train, y_train)
+            self.learner.train(x_train, y_train, validation_split=self.validation_split, verbose=1)
+            self.episodic_buffer.reset_new_sample_count()
+            self.train_step_count += 1
+            
+            # Update target network every fixed number of training steps
+            if self.train_step_count >= self.replace_every:
+                self.get_logger().info(
+                    f"Updating target network after {self.train_step_count} training steps."
+                )
+                weights = self.learner.get_weights()
+                self.target_learner.set_weights(weights)
+                self.train_step_count = 0
+
+    def predict(self, input_episodes: list[Episode], target_learner=False) -> list[float]:
+        input_data = self.episodic_buffer.buffer_to_matrix(input_episodes, self.episodic_buffer.input_labels)
+        learner = self.target_learner if target_learner else self.learner
+        predictions = learner.call(input_data)
+        if predictions is None:
+            self.get_logger().warn("Learner not configured, using alternative learner for predictions")
+            predictions = self.alternative_learner.call(input_data)
+        self.get_logger().info(f"Prediction made: {len(predictions)} episodes")
+        self.get_logger().info(f"Predictions: {predictions}")
+        return predictions
+
+
+    def generate_candidates_matrix(self, buffer, algorithm="latin"):
+        """
+        Given states as a numpy array (n_states, state_dim), return a numpy array
+        of shape (n_states * candidate_actions, state_dim + actuation_dims)
+        where each state is concatenated with each candidate action.
+        """
+        candidate_episodes = []
+        for episode in buffer:
+            candidates = self.deliberation.generate_candidate_actions(episode.perception, algorithm=algorithm)
+            candidate_episodes.extend(candidates)
+        return candidate_episodes
+
+    def obtain_maximum_value(self, q_values):
+        """
+        Given Q-values from generate_candidates_matrix, return the maximum Q-value for each state.
+        
+        Args:
+            q_values: np.ndarray of shape (n_states * candidate_actions, 1) or (n_states * candidate_actions,)
+        
+        Returns:
+            np.ndarray of shape (n_states,) with maximum Q-value for each state
+        """
+        q_values = np.asarray(q_values).flatten()
+        
+        # Reshape to (n_states, candidate_actions) and take max along candidate_actions axis
+        n_total_rows = q_values.shape[0]
+        n_states = n_total_rows // self.candidate_actions
+        
+        if n_total_rows % self.candidate_actions != 0:
+            raise ValueError(f"Q-values length {n_total_rows} is not divisible by candidate_actions {self.candidate_actions}")
+        
+        # Reshape and take maximum along the candidate_actions dimension
+        q_values_reshaped = q_values.reshape(n_states, self.candidate_actions)
+        max_q_values = np.max(q_values_reshaped, axis=1)
+    
+        return max_q_values
+
 
 ##### LEARNERS: Place here the Learner classes that implement the learning algorithms for the Utility Model.
 
