@@ -79,7 +79,7 @@ class EpisodicBuffer:
             self.node.get_logger().warning(f"New output labels {new_outputs} added to episodic buffer.")
 
 
-    def add_episode(self, episode: Episode):
+    def add_episode(self, episode: Episode, reward=0.0):
         if self.empty_episode(episode, self.inputs, self.outputs):
             self.node.get_logger().warning("The episode is empty, not adding to buffer.")
         else:
@@ -446,7 +446,7 @@ class TraceBuffer(EpisodicBuffer):
     """
     Trace Buffer class, a specialized version of the Episodic Buffer that stores traces of episodes.
     """
-    def __init__(self, node, main_size, secondary_size=0, max_traces=10, min_traces=1, max_antitraces=5, train_split=1.0, inputs=[], outputs=[], evaluation_method='linear', random_seed=0, **params):
+    def __init__(self, node, main_size, secondary_size=0, max_traces=10, min_traces=1, max_antitraces=5, train_split=1.0, inputs=[], outputs=[], evaluation_method='linear', reward_factor=1.0, random_seed=0, **params):
         super().__init__(node, main_size, secondary_size, train_split, inputs, outputs, random_seed, **params)
         self.traces_buffer = deque(maxlen=max_traces)
         self.antitraces_buffer = deque(maxlen=max_antitraces)
@@ -454,8 +454,9 @@ class TraceBuffer(EpisodicBuffer):
         self.min_utility_fraction = 0.01
         self.min_traces = float(min_traces)
         self.evaluation_method = evaluation_method
+        self.reward_factor = reward_factor
 
-    def add_episode(self, episode, reward):
+    def add_episode(self, episode, reward=0.0):
         if type(episode) is not Episode:
             raise ValueError("The episode must be of type Episode.")
         if (not self.input_labels and self.inputs) or (not self.output_labels and self.outputs):
@@ -470,7 +471,9 @@ class TraceBuffer(EpisodicBuffer):
             self.new_traces += 1
             self.node.get_logger().info(f"Adding trace with {self.main_size} episodes. New traces: {self.new_traces}")
             self.clear()
-        elif self.new_sample_count_main == self.main_max_size and self.n_traces > self.min_traces: # If the buffer is full, and there are enough traces, add an antitrace
+
+    def add_antitrace(self):
+        if self.n_traces >= self.min_traces: # If the buffer is full, and there are enough traces, add an antitrace
             self.node.get_logger().info("Adding antitrace")
             self.antitraces_buffer.append(list(zip(self.main_buffer, np.zeros(self.main_max_size))))
             self.clear()
@@ -480,10 +483,10 @@ class TraceBuffer(EpisodicBuffer):
         if n == 0:
             return []
         min_val = reward * self.min_utility_fraction
-        values = getattr(self, f"eval_{self.evaluation_method}", self.eval_default)(reward, min_val, n, self.main_max_size)
+        values = getattr(self, f"eval_{self.evaluation_method}", self.eval_default)(reward, min_val, self.reward_factor, n, self.main_max_size)
         return values
-      
-    def get_dataset(self, shuffle=True, n_samples=None):
+
+    def get_flattened_traces(self, n_samples=None):
         if n_samples is not None:
             if len(self.traces_buffer) > n_samples:
                 idx = self.rng.choice(len(self.traces_buffer), size=n_samples, replace=False)
@@ -494,7 +497,10 @@ class TraceBuffer(EpisodicBuffer):
             selected_traces = list(self.traces_buffer)
         flattened_traces = [item for trace in selected_traces for item in trace]
         buffer, utilities = zip(*flattened_traces) if flattened_traces else ([], [])
-        utilities = np.array(utilities)
+        return buffer, np.array(utilities)
+
+    def get_dataset(self, shuffle=True, n_samples=None):
+        buffer, utilities = self.get_flattened_traces(n_samples)
         states, _ = self._get_samples_from_buffer(buffer, shuffle=False)
         x_train, y_train = self._shuffle_dataset(states, utilities) if shuffle else (states, utilities)
         return x_train, y_train
@@ -511,11 +517,11 @@ class TraceBuffer(EpisodicBuffer):
             self.new_traces = 0
 
     @staticmethod
-    def eval_default(reward, min_val, n, full_length):
+    def eval_default(reward, min_val, reward_factor, n, full_length):
         raise NotImplementedError(f"Evaluation method requested is not implemented.")
 
     @staticmethod
-    def eval_linear(reward, min_val, n, full_length):
+    def eval_linear(reward, min_val, reward_factor, n, full_length):
         """
         Linear evaluation function: f(x) = start_val + (reward - start_val) * x / (n - 1)
         where x ranges from 0 to (n-1)
@@ -531,18 +537,18 @@ class TraceBuffer(EpisodicBuffer):
         for i in range(n-1):
             value = start_val + (reward - start_val) * i / (n - 1)
             values.append(value)
-        values.append(reward)
+        values.append(reward*reward_factor)
         return values
 
     @staticmethod
-    def eval_exponential(reward, min_val, n, full_length):
+    def eval_exponential(reward, min_val, reward_factor, n, full_length):
         """
         Exponential evaluation function: f(x) = min_val * exp(k * x)
         where k = ln(reward/min_val) / (full_length-1) and x ranges from (full_length-n) to (full_length-1)
         This ensures consistency - shorter sequences are slices of the full sequence.
         """
         if n == 1:
-            return [reward]
+            return [reward*reward_factor]
         
         # Ensure min_val is positive for logarithm calculation
         if min_val <= 0:
@@ -558,15 +564,15 @@ class TraceBuffer(EpisodicBuffer):
             position = start_position + i
             value = min_val * np.exp(k * position)
             values.append(value)
-        values.append(reward)
+        values.append(reward*reward_factor)
         return values
     
     @staticmethod
-    def eval_goal_only(reward, min_val, n, full_length):
+    def eval_goal_only(reward, min_val, reward_factor, n, full_length):
         """
         Goal only evaluation function: f(x) = reward if x == n-1 else 0
         """
-        values = [0.0] * (n - 1) + [reward]
+        values = [0.0] * (n - 1) + [reward*reward_factor]
         return values
 
     @property
