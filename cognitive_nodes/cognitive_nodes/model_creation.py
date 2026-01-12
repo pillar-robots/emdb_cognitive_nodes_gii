@@ -263,7 +263,7 @@ class ModelCreationPolicy(Policy, ModelCreationMixin):
                     goal = node.get("goal", None)
                     if not goal and created_goal:
                         goal = created_goal
-                    else:
+                    elif goal is None:
                         raise ValueError("Goal is required for UtilityModel creation.")
                     if created_world_model:
                         world_model = created_world_model

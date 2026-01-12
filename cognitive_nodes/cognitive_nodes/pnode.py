@@ -177,6 +177,7 @@ class PNode(CognitiveNode):
         self.added_point = True
         self.update_history(confidence)
         self.publish_success_rate()
+        self.get_logger().info(f"P-Node success rate: {self.success_rate}")
             
     def calculate_activation(self, perception=None, activation_list=None):
         """
@@ -335,7 +336,7 @@ class PNode(CognitiveNode):
         else:
             self.history.appendleft(False)
         self.success_rate = sum(self.history)/self.history.maxlen
-    
+        self.get_logger().info(f"DEBUG: Added point with confidence: {confidence}. New success rate: {self.success_rate}. Learnable: {self.space.learnable()}")
 
 
 def main(args = None):

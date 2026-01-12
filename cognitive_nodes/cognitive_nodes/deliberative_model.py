@@ -437,7 +437,7 @@ import os
 
 class ANNLearner_torch(Learner):
     def __init__(self, node, buffer, batch_size=32, epochs=50, output_activation='sigmoid', 
-                 hidden_activation='relu', hidden_layers=[128], learning_rate=0.001, 
+                 hidden_activation='relu', hidden_layers=[128], learning_rate=0.001, loss_function=nn.MSELoss, val_function=nn.L1Loss, 
                  model_file=None, tensorboard=False, tensorboard_log_dir=None, 
                  device='cpu', **params):
         super().__init__(node, buffer, **params)
@@ -460,7 +460,8 @@ class ANNLearner_torch(Learner):
         # Model and optimizer will be initialized later
         self.model = None
         self.optimizer = None
-        self.criterion = nn.MSELoss()
+        self.criterion = loss_function()
+        self.val_criterion = val_function()
         
         if self.model_file is not None:
             self.load_model()
@@ -650,7 +651,7 @@ class ANNLearner_torch(Learner):
                         batch_x = batch_x.to(self.device)
                         batch_y = batch_y.to(self.device)
                         outputs = self.model(batch_x)
-                        loss = self.criterion(outputs, batch_y)
+                        loss = self.val_criterion(outputs, batch_y)
                         val_loss += loss.item()
                         val_batches += 1
                         
