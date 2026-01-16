@@ -210,7 +210,10 @@ class ModelCreationPolicy(Policy, ModelCreationMixin):
     def episode_callback(self, msg):
         episode = episode_msg_to_obj(msg)
         self.last_episode = episode
-        if not episode.parent_policy: # Parent policy is empty if no specific Utility Model/Policy is being executed
+        if msg.parent_policy == "reset_world":
+            self.get_logger().info("World reset detected, clearing buffer")
+            self.episodic_buffer.clear()
+        elif episode.parent_policy != self.name: 
             self.episodic_buffer.add_episode(episode)
             for goal, reward in episode.reward_list.items():
                 if not isclose(reward, 0.0):
@@ -240,6 +243,7 @@ class ModelCreationPolicy(Policy, ModelCreationMixin):
         self.last_episode.parent_policy = self.name
         self.last_episode.old_perception = self.last_episode.perception
         self.last_episode.action = Action()
+        self.last_episode.reward_list = {goal:0.0 for goal in self.last_episode.reward_list}
         self.episode_publisher.publish(episode_obj_to_msg(self.last_episode))
         response.policy=self.name
         return response

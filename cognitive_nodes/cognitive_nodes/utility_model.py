@@ -7,7 +7,7 @@ from math import isclose
 from rclpy.executors import SingleThreadedExecutor
 
 from core.utils import class_from_classname
-from cognitive_nodes.episode import Episode, episode_msg_to_obj, episode_msg_list_to_obj_list
+from cognitive_nodes.episode import Episode, episode_msg_to_obj, episode_obj_to_msg, episode_msg_list_to_obj_list
 from cognitive_nodes.episodic_buffer import EpisodicBuffer, TraceBuffer
 from cognitive_processes.deliberation import Deliberation
 
@@ -31,7 +31,7 @@ class UtilityModel(DeliberativeModel):
         :param class_name: The name of the Utility Model class.
         :type class_name: str
         """
-        super().__init__(name, class_name, prediction_srv_type=prediction_srv_type, **params)
+        super().__init__(name, class_name, prediction_srv_type=prediction_srv_type, node_type="utility_model", **params)
         self.configure_activation_inputs(self.neighbors)
         self.setup_model(trace_length=trace_length, max_iterations=max_iterations, candidate_actions=candidate_actions, ltm_id=ltm_id, **params)
         self.execute_service = self.create_service(
@@ -97,6 +97,8 @@ class UtilityModel(DeliberativeModel):
         self.deliberation.finished_flag.clear()
         self.get_logger().info(f"Deliberation finished: {self.name}")
         response.policy = self.name
+        response.episode = episode_obj_to_msg(self.deliberation.summary_episode)
+
         return response
 
 class NoveltyUtilityModel(UtilityModel):
@@ -343,7 +345,10 @@ class LearnedUtilityModel(UtilityModel):
         return response
 
     def episode_callback(self, msg):
-        if not msg.parent_policy: # Parent policy is empty if no specific Utility Model/Policy is being executed
+        if msg.parent_policy == "reset_world":
+            self.get_logger().info("World reset detected, clearing buffer")
+            self.episodic_buffer.clear()
+        elif msg.parent_policy!=self.name: # Filter self generated episodes as those are handled by the deliberation process
             episode = episode_msg_to_obj(msg)
             linked_goals = self.deliberation.get_linked_goals()
             rewards = [episode.reward_list[goal] for goal in linked_goals if goal in episode.reward_list]
@@ -353,9 +358,7 @@ class LearnedUtilityModel(UtilityModel):
                 self.get_logger().info(f"New trace added to episodic buffer. Total traces: {self.episodic_buffer.n_traces}, Min traces: {self.episodic_buffer.min_traces}")
                 self.deliberation.update_pnodes_reward_basis(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache)
                 self.train_step()
-        elif msg.parent_policy == "reset_world":
-            self.get_logger().info("World reset detected, clearing buffer")
-            self.episodic_buffer.clear()
+        
 
     def add_trace_callback(self, request, response):
         episodes = episode_msg_list_to_obj_list(request.episodes)
@@ -463,7 +466,7 @@ class QUtilityModel(LearnedUtilityModel):
             next_states = self.deliberation.predict_perceptions(self.deliberation.current_world, candidate_states_actions)
             q_values_next = self.predict(next_states, target_learner=True)
             max_q_values_next = self.obtain_maximum_value(q_values_next)
-            y_train = np.array([reward + self.discount_factor * max_q if not isclose(reward, 1.0) else reward for reward, max_q in zip(rewards, max_q_values_next)])
+            y_train = np.array([reward + self.discount_factor * max_q if reward < 1.0 else reward for reward, max_q in zip(rewards, max_q_values_next)])
 
             # Train the learner with the computed Q-values
             x_train, y_train = self.episodic_buffer._shuffle_dataset(x_train, y_train)
