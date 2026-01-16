@@ -50,6 +50,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/Policy.srv"
   "srv/Predict.srv"
   "srv/PredictUtility.srv"
+  "srv/SaveModel.srv"
   "srv/SendSpace.srv"
   "srv/SetActivation.srv"
   "srv/SetActivationTopic.srv"

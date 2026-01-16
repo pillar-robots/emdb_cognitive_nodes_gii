@@ -10,7 +10,7 @@ from keras import layers, metrics, losses, Sequential
 
 from core.cognitive_node import CognitiveNode
 from core.utils import class_from_classname, msg_to_dict
-from cognitive_node_interfaces.srv import SetActivation, Predict, GetSuccessRate, IsCompatible
+from cognitive_node_interfaces.srv import SetActivation, Predict, GetSuccessRate, IsCompatible, SaveModel
 from cognitive_nodes.episodic_buffer import EpisodicBuffer
 from cognitive_nodes.episode import Episode, Action, episode_msg_to_obj, episode_msg_list_to_obj_list, episode_obj_list_to_msg_list
 
@@ -70,6 +70,14 @@ class DeliberativeModel(CognitiveNode):
             IsCompatible,
             node_type+ "/" + str(name) + '/is_compatible',
             self.is_compatible_callback,
+            callback_group=self.cbgroup_server
+        )
+
+        # N: Save Model Service
+        self.save_model_service = self.create_service(
+            SaveModel,
+            node_type+ "/" + str(name) + '/save_model',
+            self.save_model_callback,
             callback_group=self.cbgroup_server
         )
 
@@ -143,6 +151,38 @@ class DeliberativeModel(CognitiveNode):
         self.get_logger().info('Checking if compatible..')
         raise NotImplementedError
         response.compatible = True
+        return response
+
+    def save_model_callback(self, request, response):
+        """
+        Save the current model to a file.
+
+        :param request: The request that contains the prefix and suffix for the file name.
+        :type request: cognitive_node_interfaces.srv.SaveModel.Request
+        :param response: The response that contains the saved model path and success status.
+        :type response: cognitive_node_interfaces.srv.SaveModel.Response
+        :return: The response that contains the saved model path and success status.
+        :rtype: cognitive_node_interfaces.srv.SaveModel.Response
+        """
+        self.get_logger().info('Saving model...')
+        if self.learner is not None and hasattr(self.learner, 'save_model'):
+            model_name = f"{request.prefix}_{self.name}_{request.suffix}"
+            try:
+                success, path = self.learner.save_model(model_name)
+            except Exception as e:
+                self.get_logger().error(f"Error saving model: {e}")
+                path = ""
+                success = False
+            response.saved_model_path = path
+            response.success = success
+            if success:
+                self.get_logger().info(f"Model saved to {path}.")
+            else:
+                self.get_logger().error("Failed to save model.")
+        else:
+            response.saved_model_path = ""
+            response.success = False
+            self.get_logger().error("Learner does not support saving models.")
         return response
 
     def calculate_activation(self, perception = None, activation_list=None):
@@ -507,16 +547,16 @@ class ANNLearner_torch(Learner):
         else:
             self.node.get_logger().warning(f"Model file {self.model_file} not found")
 
-    def save_model(self, filepath=None):
+    def save_model(self, filepath):
         """Save model to file."""
         if not self.configured:
             self.node.get_logger().warning("Model not configured. Cannot save.")
-            return False
+            return False, ""
             
-        save_path = filepath or self.model_file
-        if save_path is None:
+        filepath = filepath if filepath.endswith('.pth') else filepath + '.pth'
+        if filepath is None:
             self.node.get_logger().warning("No save path provided")
-            return False
+            return False, ""
             
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
@@ -529,8 +569,8 @@ class ANNLearner_torch(Learner):
             'learning_rate': self.learning_rate
         }
         
-        torch.save(checkpoint, save_path)
-        self.node.get_logger().info(f"Model saved to {save_path}")
+        torch.save(checkpoint, filepath)
+        self.node.get_logger().info(f"Model saved to {filepath}")
         return True
 
     def reset_model_state(self):

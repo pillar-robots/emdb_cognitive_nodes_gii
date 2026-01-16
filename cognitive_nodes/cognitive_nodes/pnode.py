@@ -6,7 +6,7 @@ from collections import deque
 from core.cognitive_node import CognitiveNode
 from cognitive_nodes.space import PointBasedSpace
 from core.utils import class_from_classname, perception_msg_to_dict, separate_perceptions
-from cognitive_node_interfaces.srv import AddPoint, AddPoints, SendSpace, ContainsSpace
+from cognitive_node_interfaces.srv import AddPoint, AddPoints, SendSpace, ContainsSpace, SaveModel
 from cognitive_node_interfaces.msg import Perception, PerceptionStamped, SuccessRate
 
 class PNode(CognitiveNode):
@@ -44,6 +44,8 @@ class PNode(CognitiveNode):
             name) + '/send_space', self.send_pnode_space_callback, callback_group=self.cbgroup_server)
         self.contains_space_service = self.create_service(ContainsSpace, 'pnode/' + str(
             name) + '/contains_space', self.contains_space_callback, callback_group=self.cbgroup_server)
+        self.save_model_service = self.create_service(SaveModel, "pnode/" + str(
+            name) + '/save_model', self.save_model_callback, callback_group=self.cbgroup_server)
         self.history_size = history_size
         self.history = deque([], history_size)
         self.success_rate = 0.0
@@ -204,7 +206,8 @@ class PNode(CognitiveNode):
                 space = self.spaces[0]
                 if space and self.added_point:
                     activation_value = max(0.0, space.get_probability(perception_line))
-                    self.get_logger().debug(f'PNODE DEBUG: Perception: {perception_line} Space provided activation: {activation_value}')
+                    if activation_list is None:
+                        self.get_logger().info(f'PNODE DEBUG: Perception: {perception_line} Space provided activation: {activation_value}')
                 else:
                     activation_value = 0.0
 
@@ -301,6 +304,39 @@ class PNode(CognitiveNode):
         self.process_neighbors()
         self.publish_success_rate()
         return response
+
+    def save_model_callback(self, request, response):
+        """
+        Save the current model to a file.
+
+        :param request: The request that contains the prefix and suffix for the file name.
+        :type request: cognitive_node_interfaces.srv.SaveModel.Request
+        :param response: The response that contains the saved model path and success status.
+        :type response: cognitive_node_interfaces.srv.SaveModel.Response
+        :return: The response that contains the saved model path and success status.
+        :rtype: cognitive_node_interfaces.srv.SaveModel.Response
+        """
+        self.get_logger().info('Saving model...')
+        if self.space is not None and hasattr(self.space, 'save_model'):
+            model_name = f"{request.prefix}_{self.name}_{request.suffix}"
+            try:
+                success, path = self.space.save_model(model_name)
+            except Exception as e:
+                self.get_logger().error(f"Error saving model: {e}")
+                path = ""
+                success = False
+            response.saved_model_path = path
+            response.success = success
+            if success:
+                self.get_logger().info(f"Model saved to {path}.")
+            else:
+                self.get_logger().error("Failed to save model.")
+        else:
+            response.saved_model_path = ""
+            response.success = False
+            self.get_logger().error("Learner does not support saving models.")
+        return response
+
 
     def process_neighbors(self):
         """

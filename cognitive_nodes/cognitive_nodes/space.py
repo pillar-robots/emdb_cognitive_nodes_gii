@@ -868,3 +868,19 @@ class ANNSpace(PointBasedSpace):
         else:
             act = 0.0
         return min(act, self.parent_space.get_probability(perception)) if self.parent_space else act
+
+    def save_model(self, path):
+        """
+        Save the trained model to the specified path.
+
+        :param path: The file path where the model should be saved.
+        :type path: str
+        """
+        if self.model:
+            fullpath = path + ".keras"
+            self.model.save(fullpath)
+            self.logger.info(f"Model saved to {fullpath}")
+            return True, fullpath
+        else:
+            self.logger.warning("No model to save.")
+            return False, ""
