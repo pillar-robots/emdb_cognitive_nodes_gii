@@ -352,7 +352,7 @@ class ModelCreationPolicy(Policy, ModelCreationMixin):
             reward_node = drive
         else:
             reward_node = goal
-        rewards = [episode.reward_list[reward_node] for episode in trace]
+        rewards = [episode.reward_list.get(reward_node, 0.0) for episode in trace]
         trace_success = await self.node_clients[utility_model_trace_service].send_request_async(episodes=episode_obj_list_to_msg_list(trace), rewards=rewards)
         if not trace_success.added:
             self.get_logger().error(f"Failed to add trace to UtilityModel: {utility_model_name}")

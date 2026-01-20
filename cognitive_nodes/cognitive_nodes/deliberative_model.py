@@ -166,7 +166,7 @@ class DeliberativeModel(CognitiveNode):
         """
         self.get_logger().info('Saving model...')
         if self.learner is not None and hasattr(self.learner, 'save_model'):
-            model_name = f"{request.prefix}_{self.name}_{request.suffix}"
+            model_name = f"{request.prefix}{self.name}{request.suffix}"
             try:
                 success, path = self.learner.save_model(model_name)
             except Exception as e:
@@ -571,7 +571,7 @@ class ANNLearner_torch(Learner):
         
         torch.save(checkpoint, filepath)
         self.node.get_logger().info(f"Model saved to {filepath}")
-        return True
+        return True, filepath
 
     def reset_model_state(self):
         """Reset optimizer state while keeping model weights."""
