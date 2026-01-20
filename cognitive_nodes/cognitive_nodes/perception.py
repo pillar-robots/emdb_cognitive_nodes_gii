@@ -371,8 +371,8 @@ class OscarLLMPerception(Perception):
     """Oscar LLM Perception class"""
     def __init__(self, name='perception', class_name = 'cognitive_nodes.perception.Perception', default_msg = None, default_topic = None, normalize_data = None, **params):
         """
-        Constructor for the Perception class.
-        Initializes a Perception instance with the given name and registers it in the LTM.
+        Constructor for the OscarLLMPerception class.
+        Initializes a OscarLLMPerception instance with the given name and registers it in the LTM.
         
         :param name: The name of the Perception instance.
         :type name: str

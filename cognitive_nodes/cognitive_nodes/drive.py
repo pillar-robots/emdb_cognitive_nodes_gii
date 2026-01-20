@@ -299,6 +299,14 @@ class DriveLLM(Drive):
                 self.input_subscriptions.append(input_subscription)
 
     def extract_variables(self, drive_function):
+        """
+        Extracts the variables (sensors and perceptions) from the drive function string.
+
+        :param drive_function: The drive function as a string.
+        :type drive_function: str
+        :return: The list of sensors extracted from the drive function.
+        :rtype: list
+        """
         pattern = r'\b[a-zA-Z_]\w*(?:\.\w+)?'
         matches = re.findall(pattern, drive_function)
         sensors = []
@@ -314,6 +322,12 @@ class DriveLLM(Drive):
 
 
     def create_topics(self):
+        """
+        Creates the list of input topics based on the drive function.
+        
+        :return: The list of input topics.
+        :rtype: list
+        """
         input_topics = []
         self.sensors = self.extract_variables(str(self.drive_function))
         for sensor in self.sensors:
@@ -327,13 +341,10 @@ class DriveLLM(Drive):
 
         :param msg: Input data message.
         :type msg: Configurable (Typically std_msgs.msg.Float32)
-        """
-        # VIENE DE TOPIC /perception/<nombre_percepcion>/value
-        #self.get_logger().info(f"EXCECUTING THIS CODE***************************************")
-        # Pasar de percepciones PerceptionStamped a Diccionario        
+        """       
         perception_dict = perception_msg_to_dict(msg.perception)
         #self.get_logger().info(f"Updated perceptions: {perception_dict}")
-        # Guardar en diccionario local {"obj1": {x:0.0, y:0.0, etc etc}} y pone en true el indicador de que está actualizado
+        # Save in local dictionary {"obj1": {x:0.0, y:0.0, etc etc}} and set to true the indicator that it is updated
         for sensor in perception_dict.keys():
             for key in self.updated_perceptions.keys():
                 if key == sensor:
@@ -341,8 +352,8 @@ class DriveLLM(Drive):
                     self.updated_perceptions[sensor] = True
         #self.get_logger().info(f"Updated perceptions: {self.updated_perceptions}")
 
-        # Si todas las percepciones están actualizadas, evaluar y calcular reward
-        # Después de evaluar hay que poner en false todos los updated_perceptions
+        # If all the perceptions are updated, evaluate and calculate reward
+        # After evaluating, set all updated_perceptions to false
         if all(self.updated_perceptions.values()):
             #self.get_logger().info(f"PERCEPTIONS!!!!!!!!!!!!!!!!: {self.updated_perceptions}")
             self.evaluate(self.final_values, self.updated_perceptions)
@@ -351,7 +362,7 @@ class DriveLLM(Drive):
             for sensor in self.updated_perceptions.keys():
                 self.updated_perceptions[sensor]=False
             self.input_flag = True
-    # Pasa las cosas al formato object1_x_position....
+    # changes format
     def extract_attributes(self):
         output={}
         for sensor in self.final_values.keys():
@@ -385,6 +396,7 @@ class DriveLLM(Drive):
     async def publish_activation_callback(self): #Timed publish of the activation value
         """
         Timed publish of the activation value. This method will calculate the activation based on the evaluation of the drive and the activation of its neighbors, and then publish it in the corresponding topic.
+        
         """   
         if self.activation_topic:
             self.get_logger().debug(f'Activation Inputs: {str(self.activation_inputs)}')
@@ -401,10 +413,12 @@ class DriveLLM(Drive):
 
     def evaluate(self, final_values=None, updated_perceptions=None):
         """
-        Evaluates the drive value according to an exponential function.
+        Evaluates the drive value according to the drive function provided by the LLM.
 
-        :param perception: The given normalized perception.
-        :type perception: dict
+        :param final_values: The final values extracted from the perceptions.
+        :type final_values: dict
+        :param updated_perceptions: Dictionary indicating which perceptions have been updated.
+        :type updated_perceptions: dict
         :return: The valuation of the perception and its timestamp.
         :rtype: cognitive_node_interfaces.msg.Evaluation
         """
