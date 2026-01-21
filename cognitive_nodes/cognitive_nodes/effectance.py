@@ -48,7 +48,7 @@ class DriveEffectanceInternal(Drive, PNodeSuccess):
         if self.limit_depth:
             self.get_logger().error("DEBUG MESSAGE - DEPTH LIMIT ACTIVE")
         self.min_confidence=min_confidence
-        self.configure_pnode_success(self.LTM_id)
+        self.configure_pnode_success(self.LTM_id, self.cbgroup_client)
 
     
     def pnode_success_callback(self, msg):
@@ -104,7 +104,7 @@ class DriveEffectanceExternal(Drive, EpisodeSubscription):
         :type class_name: str
         :param episodes_topic: Topic from where to read the episodes.
         :type episodes_topic: str
-        :param episodes_msg: Message type of the episodes topic (most cases: cognitive_processes_interfaces.msg.Episode).
+        :param episodes_msg: Message type of the episodes topic (most cases: cognitive_node_interfaces.msg.Episode).
         :type episodes_msg: str
         :raises Exception: Raises exception if no episode topic was provided.
         """        
@@ -118,14 +118,14 @@ class DriveEffectanceExternal(Drive, EpisodeSubscription):
         self.new_effects={}
         self.get_effects_service = self.create_service(GetEffects, 'drive/' + str(
             name) + '/get_effects', self.get_effects_callback, callback_group=self.cbgroup_server)
-        self.configure_episode_subscription(episodes_topic, episodes_msg)
+        self.configure_episode_subscription(episodes_topic, episodes_msg, self.cbgroup_activation)
     
     def episode_callback(self, msg):
         """
         Callback that processes an episode message.
 
         :param msg: Episode message.
-        :type msg: ROS Message (most cases: cognitive_processes_interfaces.msg.Episode)
+        :type msg: ROS Message (most cases: cognitive_node_interfaces.msg.Episode)
         """        
         perception=perception_msg_to_dict(msg.perception)
         old_perception=perception_msg_to_dict(msg.old_perception)
@@ -222,7 +222,7 @@ class PolicyEffectanceInternal(Policy, PNodeSuccess):
         self.threshold_delta=threshold_delta
         self.goal_class=goal_class
         self.index=0
-        self.configure_pnode_success(self.LTM_id)
+        self.configure_pnode_success(self.LTM_id, self.cbgroup_client)
         self.pnode_goals_dict={}
 
     #UGLY HACK: This was done to limit effectance chains to a depth of 1. 

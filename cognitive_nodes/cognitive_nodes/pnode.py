@@ -1,10 +1,12 @@
-from collections import deque
 import rclpy
+import numpy as np
 from rclpy.time import Time
+from collections import deque
+
 from core.cognitive_node import CognitiveNode
 from cognitive_nodes.space import PointBasedSpace
 from core.utils import class_from_classname, perception_msg_to_dict, separate_perceptions
-from cognitive_node_interfaces.srv import AddPoint, SendSpace, ContainsSpace
+from cognitive_node_interfaces.srv import AddPoint, AddPoints, SendSpace, ContainsSpace, SaveModel
 from cognitive_node_interfaces.msg import Perception, PerceptionStamped, SuccessRate
 
 class PNode(CognitiveNode):
@@ -36,10 +38,14 @@ class PNode(CognitiveNode):
         self.added_point = False
         self.add_point_service = self.create_service(AddPoint, 'pnode/' + str(
             name) + '/add_point', self.add_point_callback, callback_group=self.cbgroup_server)
+        self.add_points_service = self.create_service(AddPoints, 'pnode/' + str(
+            name) + '/add_points', self.add_points_callback, callback_group=self.cbgroup_server)
         self.send_pnode_space_service = self.create_service(SendSpace, 'pnode/' + str(
             name) + '/send_space', self.send_pnode_space_callback, callback_group=self.cbgroup_server)
         self.contains_space_service = self.create_service(ContainsSpace, 'pnode/' + str(
             name) + '/contains_space', self.contains_space_callback, callback_group=self.cbgroup_server)
+        self.save_model_service = self.create_service(SaveModel, "pnode/" + str(
+            name) + '/save_model', self.save_model_callback, callback_group=self.cbgroup_server)
         self.history_size = history_size
         self.history = deque([], history_size)
         self.success_rate = 0.0
@@ -113,6 +119,7 @@ class PNode(CognitiveNode):
 
     def add_point_callback(self, request, response):
         """
+        DEPRECATED: SEE add_points_callback
         Callback method for adding a point (or anti-point) to a specific P-Node.
 
         :param request: The request that contains the point that is added and its confidence.
@@ -129,6 +136,28 @@ class PNode(CognitiveNode):
         self.get_logger().info('Adding point: ' + str(point) + 'Confidence: ' + str(confidence))
         response.added = True
 
+        return response
+    
+    def add_points_callback(self, request, response):
+        """
+        Callback method for adding a point (or anti-point) to a specific P-Node.
+
+        :param request: The request that contains the list of points that are added and their confidence.
+        :type request: cognitive_node_interfaces.srv.AddPoints.Request
+        :param response: The response indicating if the points were added to the P-Node.
+        :type respone: core_interfaces.srv.AddPoints.Response
+        :return: The response indicating if the points were added to the P-Node.
+        :rtype: cognitive_node_interfaces.srv.AddPoints.Response
+        """
+        if request.points:
+            self.point_msg = request.points[0]
+            for point, confidence in zip(request.points, request.confidences):
+                point_dict = perception_msg_to_dict(point)
+                self.add_point(point_dict, confidence)
+            response.added = True
+            self.get_logger().info(f'Added: {len(request.points)} points with mean confidence: {np.mean(request.confidences)}')
+        else:
+            response.added = False
         return response
     
     def add_point(self, point, confidence):
@@ -150,6 +179,7 @@ class PNode(CognitiveNode):
         self.added_point = True
         self.update_history(confidence)
         self.publish_success_rate()
+        self.get_logger().info(f"P-Node success rate: {self.success_rate}")
             
     def calculate_activation(self, perception=None, activation_list=None):
         """
@@ -176,7 +206,8 @@ class PNode(CognitiveNode):
                 space = self.spaces[0]
                 if space and self.added_point:
                     activation_value = max(0.0, space.get_probability(perception_line))
-                    self.get_logger().debug(f'PNODE DEBUG: Perception: {perception_line} Space provided activation: {activation_value}')
+                    if activation_list is None:
+                        self.get_logger().info(f'PNODE DEBUG: Perception: {perception_line} Space provided activation: {activation_value}')
                 else:
                     activation_value = 0.0
 
@@ -274,6 +305,39 @@ class PNode(CognitiveNode):
         self.publish_success_rate()
         return response
 
+    def save_model_callback(self, request, response):
+        """
+        Save the current model to a file.
+
+        :param request: The request that contains the prefix and suffix for the file name.
+        :type request: cognitive_node_interfaces.srv.SaveModel.Request
+        :param response: The response that contains the saved model path and success status.
+        :type response: cognitive_node_interfaces.srv.SaveModel.Response
+        :return: The response that contains the saved model path and success status.
+        :rtype: cognitive_node_interfaces.srv.SaveModel.Response
+        """
+        self.get_logger().info('Saving model...')
+        if self.space is not None and hasattr(self.space, 'save_model'):
+            model_name = f"{request.prefix}_{self.name}_{request.suffix}"
+            try:
+                success, path = self.space.save_model(model_name)
+            except Exception as e:
+                self.get_logger().error(f"Error saving model: {e}")
+                path = ""
+                success = False
+            response.saved_model_path = path
+            response.success = success
+            if success:
+                self.get_logger().info(f"Model saved to {path}.")
+            else:
+                self.get_logger().error("Failed to save model.")
+        else:
+            response.saved_model_path = ""
+            response.success = False
+            self.get_logger().error("Learner does not support saving models.")
+        return response
+
+
     def process_neighbors(self):
         """
         Detects if the P-Node is linked to a Goal node.
@@ -308,7 +372,7 @@ class PNode(CognitiveNode):
         else:
             self.history.appendleft(False)
         self.success_rate = sum(self.history)/self.history.maxlen
-    
+        self.get_logger().info(f"DEBUG: Added point with confidence: {confidence}. New success rate: {self.success_rate}. Learnable: {self.space.learnable()}")
 
 
 def main(args = None):

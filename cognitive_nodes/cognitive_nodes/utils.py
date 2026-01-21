@@ -9,15 +9,15 @@ class LTMSubscription:
     """
     LTMSubscription is a mixin class that provides a method to configure a subscription to the LTM.
     """    
-    def configure_ltm_subscription(self, ltm):
+    def configure_ltm_subscription(self, ltm, callback_group):
         """
         Configure the subscription to the LTM.
 
         :param ltm: LTM ID.
         :type ltm: str
         """        
-        self.ltm_suscription = self.create_subscription(String, "state", self.ltm_change_callback, 0, callback_group=self.cbgroup_client)
-        
+        self.ltm_suscription = self.create_subscription(String, "state", self.ltm_change_callback, 0, callback_group=callback_group)
+
     def ltm_change_callback(self, msg):
         """
         Callback that processes the LTM message.
@@ -43,14 +43,14 @@ class PNodeSuccess(LTMSubscription):
     """
     PNodeSuccess is a mixin class that provides a method to configure a subscription to the success rate of the P-Nodes.
     """    
-    def configure_pnode_success(self, ltm):
+    def configure_pnode_success(self, ltm, callback_group):
         """
         Configure the subscription to the success rate of the P-Nodes.
 
         :param ltm: LTM id.
         :type ltm: str
         """        
-        self.configure_ltm_subscription(ltm)
+        self.configure_ltm_subscription(ltm, callback_group)
         self.pnode_subscriptions = {}
         self.pnode_evaluation={}
 
@@ -82,7 +82,7 @@ class EpisodeSubscription:
     """
     EpisodeSubscription is a mixin class that provides a method to configure a subscription to the episodes.
     """    
-    def configure_episode_subscription(self, episode_topic, episode_msg):
+    def configure_episode_subscription(self, episode_topic, episode_msg, callback_group):
         """
         Configure the subscription to the episodes.
 
@@ -92,8 +92,8 @@ class EpisodeSubscription:
         :type episode_msg: str
         """        
         msg_obj=class_from_classname(episode_msg)
-        self.ltm_suscription = self.create_subscription(msg_obj, episode_topic, self.episode_callback, 0, callback_group=self.cbgroup_activation)
-    
+        self.ltm_suscription = self.create_subscription(msg_obj, episode_topic, self.episode_callback, 0, callback_group=callback_group)
+
     def episode_callback(self, msg):
         """
         Callback that processes the episodes.
