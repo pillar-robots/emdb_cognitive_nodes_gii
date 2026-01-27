@@ -1,12 +1,12 @@
-import rclpy
-import gc
-from rclpy.impl.rcutils_logger import RcutilsLogger
+import os
+import numpy as np
 
-import tensorflow as tf
-from keras._tf_keras.keras.optimizers import Adam
-from keras._tf_keras.keras.losses import Loss
-from keras._tf_keras.keras.callbacks import TensorBoard
-from keras import layers, metrics, losses, Sequential
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+
 
 from core.cognitive_node import CognitiveNode
 from core.utils import class_from_classname, msg_to_dict
@@ -30,6 +30,8 @@ class DeliberativeModel(CognitiveNode):
         :type class_name: str
         :param node_type: The type of the node, defaults to "deliberative_model".
         :type node_type: str
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
         """
         super().__init__(name, class_name, **params)
 
@@ -166,7 +168,7 @@ class DeliberativeModel(CognitiveNode):
         """
         self.get_logger().info('Saving model...')
         if self.learner is not None and hasattr(self.learner, 'save_model'):
-            model_name = f"{request.prefix}_{self.name}_{request.suffix}"
+            model_name = f"{request.prefix}{self.name}{request.suffix}"
             try:
                 success, path = self.learner.save_model(model_name)
             except Exception as e:
@@ -251,235 +253,43 @@ class Learner:
     
 
 class ANNLearner(Learner):
-    def __init__(self, node, buffer, batch_size=32, epochs=50, output_activation='sigmoid', hidden_activation='relu', hidden_layers=[128], learning_rate=0.001, model_file=None, tensorboard=False, tensorboard_log_dir=None, **params):
-        super().__init__(node, buffer, **params)
-        tf.config.set_visible_devices([], 'GPU') # TODO: Handle GPU usage properly
-        self.batch_size = batch_size
-        self.epochs = epochs
-        self.output_activation = output_activation
-        self.hidden_activation = hidden_activation
-        self.hidden_layers = hidden_layers
-        self.learning_rate = learning_rate
-        self.optimizer = Adam(learning_rate=self.learning_rate)
-        self.configured = False
-        self.model_file = model_file
-        self.tensorboard = tensorboard
-        self.tensorboard_log_dir = tensorboard_log_dir
-        self._run_counter = 0
-        if self.model_file is not None:
-            self.configure_model(0,0) # Load model from file
-
-    def configure_model(self, input_length, output_length):
-        """
-        Configure the ANN model with the given input shape, output shape, and labels.
-
-        :param input_shape: The shape of the input data.
-        :type input_shape: int
-        :param output_shape: The shape of the output data.
-        :type output_shape: int
-        """
-        if self.model_file is None:
-            self.model = Sequential()
-            
-            ## TODO: USE THE LABELS TO SEPARATE THE INPUTS INTO REGUAR INPUTS AND THE POLICY ID INPUT, THEN CONCATNATE ##
-            # TODO: THIS MIGHT REQUIRE TO USE THE FUNCTIONAL API INSTEAD OF SEQUENTIAL
-            # --- Inputs ---
-            # object_input = layers.Input(shape=(), dtype=tf.int32, name="object_id")
-            # numeric_input = layers.Input(shape=(num_numeric_features,), dtype=tf.float32, name="numeric_features")
-
-            # --- Embedding Layer ---
-            #embedding_layer = layers.Embedding(input_dim=num_objects, output_dim=embedding_dim)
-            #embedded_object = embedding_layer(object_input)  # shape: (batch_size, embedding_dim)
-
-            ## TODO: USE THE LABELS TO SEPARATE THE INPUTS INTO REGUAR INPUTS AND THE POLICY ID INPUT, THEN CONCATNATE ##
-
-            self.model.add(layers.Input(shape=(input_length,)))
-            for units in self.hidden_layers:
-                self.model.add(layers.Dense(units,
-                                        activation=self.hidden_activation,
-                                        kernel_initializer="he_normal",
-                                        kernel_regularizer=tf.keras.regularizers.l2(1e-5)))
-                self.model.add(layers.BatchNormalization())   # stabilizes training
-                self.model.add(layers.Dropout(0.1))           # mild dropout
-            self.model.add(layers.Dense(output_length, activation=self.output_activation))
-            #self.model.compile(optimizer=self.optimizer, loss=AsymmetricMSE(underestimation_penalty=3.0), metrics=['mae'])
-            self.model.compile(optimizer=self.optimizer, loss="mse", metrics=['mae'])
-            self.input_length = input_length
-            self.output_length = output_length
-            self.configured = True
-
-        else:
-            self.node.get_logger().info(f"Loading model from {self.model_file}")
-            self.model = tf.keras.models.load_model(self.model_file, custom_objects={"AsymmetricMSE": AsymmetricMSE})
-            self.input_length = self.model.input_shape[1]
-            self.output_length = self.model.output_shape[1]
-            self.configured = True               
-    
-    def reset_model_state(self):
-        """Reset only the optimizer state, keeping model weights unchanged."""
-        if self.configured:
-            weights = self.model.get_weights()
-            # Create a fresh optimizer instance
-            fresh_optimizer = Adam(learning_rate=self.learning_rate)
-            del self.model
-            gc.collect()
-            self.configure_model(self.input_length, self.output_length)
-            # Recompile with fresh optimizer (weights unchanged)
-            self.model.compile(optimizer=fresh_optimizer, loss="mse", metrics=['mae'])
-            self.model.set_weights(weights)
-
-    def train(self, x_train, y_train, epochs=None, batch_size=None, validation_split=0.0, x_val=None, y_val=None, verbose=1, reset_optimizer=True):
-        # Ensure x_train and y_train are at least 2D
-        if len(x_train.shape) == 1:
-            x_train = x_train.reshape(-1, 1)
-        if len(y_train.shape) == 1:
-            y_train = y_train.reshape(-1, 1)
-
-        # Handle validation data if provided
-        validation_data = None
-        if x_val is not None and y_val is not None:
-            # Ensure x_val and y_val are at least 2D
-            if len(x_val.shape) == 1:
-                x_val = x_val.reshape(-1, 1)
-            if len(y_val.shape) == 1:
-                y_val = y_val.reshape(-1, 1)
-            validation_data = (x_val, y_val)
-            # If validation_data is provided, set validation_split to 0.0
-            validation_split = 0.0
-
-        
-        if not epochs:
-            epochs = self.epochs
-        if not batch_size:
-            batch_size = self.batch_size
-        if not self.configured:
-            self.configure_model(x_train.shape[1], y_train.shape[1])
-        callbacks = []
-
-        if reset_optimizer:
-            self.reset_model_state()
-
-        # Learning rate scheduling
-        lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=epochs // 10,
-            min_lr=1e-7,
-            verbose=1
-        )
-        callbacks.append(lr_scheduler)
-        
-        # Early stopping
-        early_stopping = tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=epochs // 5,
-            restore_best_weights=True,
-            verbose=1
-        )
-        callbacks.append(early_stopping)
-
-        if self.tensorboard:
-            if self.tensorboard_log_dir is None:
-                self.tensorboard_log_dir = f'logs/fit/{self.node.name}'
-            run_dict = self.tensorboard_log_dir + f'/run_{self._run_counter}'
-            self._run_counter += 1
-            tensorboard_callback = TensorBoard(log_dir=run_dict, histogram_freq=1)
-            callbacks.append(tensorboard_callback)
-        self.model.fit(
-            x_train,
-            y_train,
-            epochs=epochs,
-            batch_size=batch_size,
-            verbose=verbose,
-            validation_split=validation_split,
-            validation_data=validation_data,
-            callbacks=callbacks
-        )
-
-    def call(self, x):
-        if not self.configured:
-            return None
-        return self.model.predict(x)
-    
-    def evaluate(self, x_test, y_test):
-        if not self.configured:
-            return None
-        return self.model.evaluate(x_test, y_test, verbose=0)[1]
-    
-    def get_weights(self):
-        """
-        Get the current model weights.
-        
-        :return: List of weight arrays or None if model not configured.
-        :rtype: list or None
-        """
-        if not self.configured:
-            self.node.get_logger().warning("Model not configured. Cannot get weights.")
-            return None
-        return self.model.get_weights()
-    
-    def set_weights(self, weights):
-        """
-        Set the model weights.
-        
-        :param weights: List of weight arrays to set.
-        :type weights: list
-        :return: True if weights were set successfully, False otherwise.
-        :rtype: bool
-        """
-        if not self.configured:
-            self.node.get_logger().warning("Model not configured. Cannot set weights.")
-            return False
-        
-        try:
-            self.model.set_weights(weights)
-            self.node.get_logger().info("Weights set successfully.")
-            return True
-        except Exception as e:
-            self.node.get_logger().error(f"Failed to set weights: {e}")
-            return False
-
-class AsymmetricMSE(Loss):
-    def __init__(self, underestimation_penalty=1.0, overestimation_penalty=1.0, name="asymmetric_mse"):
-        """
-        underestimation_penalty: float, multiplier applied when y_pred < y_true
-        overestimation_penalty: float, multiplier applied when y_pred > y_true
-        """
-        super().__init__(name=name)
-        self.underestimation_penalty = underestimation_penalty
-        self.overestimation_penalty = overestimation_penalty
-
-    def call(self, y_true, y_pred):
-        error = y_pred - y_true
-        weight = tf.where(error < 0, self.underestimation_penalty, self.overestimation_penalty)
-        return tf.reduce_mean(weight * tf.square(error))
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "underestimation_penalty": self.underestimation_penalty
-        })
-        return config
+    """
+    Class that implements a Neural Network-based learner using PyTorch.
+    """    
 
 
-
-################################################
-####   PYTORCH VERSION - WORK IN PROGRESS   ####
-################################################
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-import numpy as np
-import os
-
-
-class ANNLearner_torch(Learner):
     def __init__(self, node, buffer, batch_size=32, epochs=50, output_activation='sigmoid', 
                  hidden_activation='relu', hidden_layers=[128], learning_rate=0.001, loss_function=nn.MSELoss, val_function=nn.L1Loss, 
-                 model_file=None, tensorboard=False, tensorboard_log_dir=None, 
-                 device='cpu', **params):
+                 model_file=None, device='cpu', **params):
+        """Initialize the ANNLearner with PyTorch-based neural network configuration.
+
+        :param node: The cognitive node that uses this learner.
+        :type node: CognitiveNode
+        :param buffer: The episodic buffer for storing and retrieving episodes.
+        :type buffer: EpisodicBuffer
+        :param batch_size: Number of samples per batch during training, defaults to 32
+        :type batch_size: int, optional
+        :param epochs: Maximum number of training epochs, defaults to 50
+        :type epochs: int, optional
+        :param output_activation: Activation function for output layer ('sigmoid', 'tanh', 'relu', 'linear'), defaults to 'sigmoid'
+        :type output_activation: str, optional
+        :param hidden_activation: Activation function for hidden layers ('relu', 'tanh', 'sigmoid'), defaults to 'relu'
+        :type hidden_activation: str, optional
+        :param hidden_layers: List of hidden layer sizes, defaults to [128]
+        :type hidden_layers: list, optional
+        :param learning_rate: Learning rate for Adam optimizer, defaults to 0.001
+        :type learning_rate: float, optional
+        :param loss_function: Loss function class for training, defaults to nn.MSELoss
+        :type loss_function: type, optional
+        :param val_function: Loss function class for validation, defaults to nn.L1Loss
+        :type val_function: type, optional
+        :param model_file: Path to pre-trained model file to load, defaults to None
+        :type model_file: str, optional
+        :param device: Device to use for training ('cpu' or 'cuda'), defaults to 'cpu'
+        :type device: str, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """
         super().__init__(node, buffer, **params)
         
         # PyTorch specific setup
@@ -493,8 +303,6 @@ class ANNLearner_torch(Learner):
         self.learning_rate = learning_rate
         self.configured = False
         self.model_file = model_file
-        self.tensorboard = tensorboard
-        self.tensorboard_log_dir = tensorboard_log_dir
         self._run_counter = 0
         
         # Model and optimizer will be initialized later
@@ -507,7 +315,13 @@ class ANNLearner_torch(Learner):
             self.load_model()
 
     def configure_model(self, input_length, output_length):
-        """Configure the ANN model with PyTorch."""
+        """Configure the ANN model architecture and initialize the optimizer.
+
+        :param input_length: Number of input features for the neural network.
+        :type input_length: int
+        :param output_length: Number of output features/predictions from the neural network.
+        :type output_length: int
+        """
         self.model = ANNModel(
             input_size=input_length,
             output_size=output_length,
@@ -524,7 +338,7 @@ class ANNLearner_torch(Learner):
         self.node.get_logger().info(f"Model configured with input: {input_length}, output: {output_length}")
 
     def load_model(self):
-        """Load model from file."""
+        """Loads model from file."""
         if os.path.exists(self.model_file):
             checkpoint = torch.load(self.model_file, map_location=self.device)
             
@@ -548,7 +362,13 @@ class ANNLearner_torch(Learner):
             self.node.get_logger().warning(f"Model file {self.model_file} not found")
 
     def save_model(self, filepath):
-        """Save model to file."""
+        """Save the trained model to a PyTorch checkpoint file.
+
+        :param filepath: Path where the model checkpoint will be saved. Automatically adds '.pth' extension if not present.
+        :type filepath: str
+        :return: Tuple containing success status and the path where the model was saved.
+        :rtype: tuple(bool, str)
+        """        
         if not self.configured:
             self.node.get_logger().warning("Model not configured. Cannot save.")
             return False, ""
@@ -566,12 +386,14 @@ class ANNLearner_torch(Learner):
             'hidden_layers': self.hidden_layers,
             'hidden_activation': self.hidden_activation,
             'output_activation': self.output_activation,
-            'learning_rate': self.learning_rate
+            'learning_rate': self.learning_rate,
+            'input_labels': self.buffer.input_labels,
+            'output_labels': self.buffer.output_labels
         }
         
         torch.save(checkpoint, filepath)
         self.node.get_logger().info(f"Model saved to {filepath}")
-        return True
+        return True, filepath
 
     def reset_model_state(self):
         """Reset optimizer state while keeping model weights."""
@@ -587,7 +409,27 @@ class ANNLearner_torch(Learner):
 
     def train(self, x_train, y_train, epochs=None, batch_size=None, validation_split=0.0, 
               x_val=None, y_val=None, verbose=1, reset_optimizer=True):
-        """Train the model using PyTorch."""
+        """Train the neural network model using PyTorch with optional validation and early stopping.
+
+        :param x_train: Training input data (features).
+        :type x_train: np.ndarray or torch.Tensor
+        :param y_train: Training target data (labels).
+        :type y_train: np.ndarray or torch.Tensor
+        :param epochs: Number of training epochs. If None, uses the learner's default epochs, defaults to None
+        :type epochs: int, optional
+        :param batch_size: Batch size for training. If None, uses the learner's default batch size, defaults to None
+        :type batch_size: int, optional
+        :param validation_split: Fraction of training data to use for validation (0.0 to 1.0), defaults to 0.0
+        :type validation_split: float, optional
+        :param x_val: Validation input data. If provided with y_val, overrides validation_split, defaults to None
+        :type x_val: np.ndarray or torch.Tensor, optional
+        :param y_val: Validation target data. If provided with x_val, overrides validation_split, defaults to None
+        :type y_val: np.ndarray or torch.Tensor, optional
+        :param verbose: Verbosity level. 0 = silent, 1 = progress logs, defaults to 1
+        :type verbose: int, optional
+        :param reset_optimizer: Whether to reset the optimizer state before training, defaults to True
+        :type reset_optimizer: bool, optional
+        """
         
         # Convert numpy arrays to torch tensors
         if isinstance(x_train, np.ndarray):
@@ -725,7 +567,13 @@ class ANNLearner_torch(Learner):
                     self.node.get_logger().info(f"Epoch {epoch+1}/{epochs} - Loss: {avg_train_loss:.4f}")
 
     def call(self, x):
-        """Make predictions with the model."""
+        """Make predictions with the trained model.
+
+        :param x: Input data for prediction. Can be numpy array or torch tensor.
+        :type x: np.ndarray or torch.Tensor
+        :return: Model predictions as a numpy array, or None if model is not configured.
+        :rtype: np.ndarray or None
+        """        
         if not self.configured:
             return None
             
@@ -745,7 +593,15 @@ class ANNLearner_torch(Learner):
         return predictions.cpu().numpy()
 
     def evaluate(self, x_test, y_test):
-        """Evaluate the model and return MAE."""
+        """Evaluate the model on test data and return Mean Absolute Error (MAE).
+
+        :param x_test: Test input data (features).
+        :type x_test: np.ndarray or torch.Tensor
+        :param y_test: Test target data (labels).
+        :type y_test: np.ndarray or torch.Tensor
+        :return: Mean Absolute Error between predictions and true values, or None if model is not configured.
+        :rtype: float or None
+        """        
         if not self.configured:
             return None
             
@@ -771,14 +627,20 @@ class ANNLearner_torch(Learner):
         return mae.cpu().item()
 
     def get_weights(self):
-        """Get the current model weights."""
+        """Get the current model , uses the state dictionary."""
         if not self.configured:
             self.node.get_logger().warning("Model not configured. Cannot get weights.")
             return None
         return self.model.state_dict()
 
     def set_weights(self, weights):
-        """Set the model weights."""
+        """Set the model weights from a state dictionary.
+
+        :param weights: PyTorch state dictionary containing model weights and biases.
+        :type weights: dict
+        :return: True if weights were successfully loaded, False otherwise.
+        :rtype: bool
+        """        
         if not self.configured:
             self.node.get_logger().warning("Model not configured. Cannot set weights.")
             return False
@@ -797,6 +659,19 @@ class ANNModel(nn.Module):
     
     def __init__(self, input_size, output_size, hidden_layers=[128], 
                  hidden_activation='relu', output_activation='sigmoid'):
+        """Initialize the PyTorch neural network model with configurable architecture.
+
+        :param input_size: Number of input features to the network.
+        :type input_size: int
+        :param output_size: Number of output features from the network.
+        :type output_size: int
+        :param hidden_layers: List of integers specifying the size of each hidden layer, defaults to [128]
+        :type hidden_layers: list, optional
+        :param hidden_activation: Activation function for hidden layers ('relu', 'tanh', 'sigmoid'), defaults to 'relu'
+        :type hidden_activation: str, optional
+        :param output_activation: Activation function for output layer ('sigmoid', 'tanh', 'relu', 'linear'), defaults to 'sigmoid'
+        :type output_activation: str, optional
+        """        
         super(ANNModel, self).__init__()
         
         self.layers = nn.ModuleList()
@@ -825,7 +700,13 @@ class ANNModel(nn.Module):
         # No activation for linear output
         
     def _get_activation(self, activation_name):
-        """Get activation function by name."""
+        """Get activation function by name.
+
+        :param activation_name: String name of the activation function.
+        :type activation_name: str
+        :return: Activation function module.
+        :rtype: nn.Module
+        """
         if activation_name == 'relu':
             return nn.ReLU()
         elif activation_name == 'tanh':
@@ -836,21 +717,43 @@ class ANNModel(nn.Module):
             return nn.ReLU()  # Default
             
     def forward(self, x):
-        """Forward pass through the network."""
+        """Forward pass through the network.
+
+        :param x: Input tensor.
+        :type x: torch.Tensor
+        :return: Output tensor after passing through the network.
+        :rtype: torch.Tensor
+        """        """"""
         for layer in self.layers:
             x = layer(x)
         return x
 
 
 class AsymmetricMSELoss(nn.Module):
-    """PyTorch version of AsymmetricMSE loss."""
+    """Asymmetric Mean Squared Error Loss that penalizes underestimations and overestimations differently."""
     
     def __init__(self, underestimation_penalty=1.0, overestimation_penalty=1.0):
+        """Initialize the AsymmetricMSELoss with different penalties for underestimation and overestimation.
+
+        :param underestimation_penalty: Penalty factor for underestimations, defaults to 1.0
+        :type underestimation_penalty: float, optional
+        :param overestimation_penalty: Penalty factor for overestimations, defaults to 1.0
+        :type overestimation_penalty: float, optional
+        """        
         super(AsymmetricMSELoss, self).__init__()
         self.underestimation_penalty = underestimation_penalty
         self.overestimation_penalty = overestimation_penalty
         
     def forward(self, y_pred, y_true):
+        """Forward pass to compute the asymmetric mean squared error loss.
+
+        :param y_pred: Predicted values.
+        :type y_pred: torch.Tensor
+        :param y_true: True target values.
+        :type y_true: torch.Tensor
+        :return: Computed asymmetric mean squared error loss.
+        :rtype: torch.Tensor
+        """        
         error = y_pred - y_true
         weight = torch.where(error < 0, self.underestimation_penalty, self.overestimation_penalty)
         return torch.mean(weight * torch.square(error))
@@ -861,7 +764,7 @@ class Evaluator:
     """    
     def __init__(self, node:CognitiveNode, learner:Learner,  buffer:EpisodicBuffer, **params) -> None:
         """
-        Constructor of the Learner class.
+        Constructor of the Evaluator class.
 
         :param node: Cognitive node that uses this model.
         :type node: CognitiveNode
@@ -873,7 +776,6 @@ class Evaluator:
         self.node = node
         self.learner = learner
         self.buffer = buffer
-        self.learner = learner
 
     def evaluate(self):
         """
