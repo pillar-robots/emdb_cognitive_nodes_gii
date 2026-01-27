@@ -15,13 +15,36 @@ from cognitive_node_interfaces.msg import Episode as EpisodeMsg
 class EpisodicBuffer:
     """
     Class that creates a buffer of episodes to be used as a STM and learn models. 
-
-    WORK IN PROGRESS
+    It supports a main buffer for training and a secondary buffer for testing.
     """    
     def __init__(self, node:CognitiveNode, main_size, secondary_size, train_split=1.0, inputs=[], outputs=[], random_seed=0, **params) -> None:
-        """
-        Constructor of the EpisodicBuffer class.
-        
+        """Initialize an EpisodicBuffer.
+
+        Creates bounded buffers for episodes and configures label extraction and RNG.
+
+        :param node: Owning cognitive node used for logging and ROS2 integration.
+        :type node: CognitiveNode
+        :param main_size: Maximum number of episodes stored in the main (training) buffer.
+        :type main_size: int
+        :param secondary_size: Maximum number of episodes stored in the secondary (testing) buffer.
+        :type secondary_size: int
+        :param train_split: Fraction in [0, 1] of incoming episodes routed to the main buffer; the remainder goes to secondary.
+        :type train_split: float
+        :param inputs: Episode fields considered inputs/features (e.g., ['old_perception', 'action']).
+        :type inputs: list[str]
+        :param outputs: Episode fields considered outputs/targets (e.g., ['perception']).
+        :type outputs: list[str]
+        :param random_seed: Seed for the internal Numpy RNG used for shuffling and sampling.
+        :type random_seed: int
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+
+        :return: None
+        :rtype: None
+
+        Notes:
+        - Buffers are implemented as bounded deques.
+        - Labels are derived from observed episodes based on inputs/outputs.
         """        
         self.node=node
         self.train_split=train_split # Percentage of samples used for training
@@ -80,6 +103,23 @@ class EpisodicBuffer:
 
 
     def add_episode(self, episode: Episode, reward=0.0):
+        """Add an episode to the buffer.
+
+        Validates content, updates labels, and routes the episode to the main or
+        secondary buffer based on train_split.
+
+        :param episode: Episode instance to add.
+        :type episode: Episode
+        :param reward: Optional reward value (unused in EpisodicBuffer; used by TraceBuffer overrides).
+        :type reward: float
+
+        :return: None
+        :rtype: None
+
+        Notes:
+        - Empty episodes (w.r.t configured inputs/outputs) are skipped with a warning.
+        - Labels are configured lazily on the first episode and updated when new dimensions appear.
+        """        
         if self.empty_episode(episode, self.inputs, self.outputs):
             self.node.get_logger().warning("The episode is empty, not adding to buffer.")
         else:
@@ -97,6 +137,20 @@ class EpisodicBuffer:
                 self.new_sample_count_secondary += 1
         
     def remove_episode(self, index=None, remove_from_main=True):
+        """Remove an episode from the buffer.
+
+        If index is provided, removes the episode at that position; otherwise,
+        removes the oldest (leftmost) episode from the selected buffer.
+
+        :param index: Position to remove. If None, removes the oldest entry.
+        :type index: int | None
+        :param remove_from_main: True to remove from main_buffer; False for secondary_buffer.
+        :type remove_from_main: bool
+
+        :return: None
+        :rtype: None
+
+        """        
         if remove_from_main:
             if index is not None:
                 self.main_buffer.remove(self.main_buffer[index]) 
@@ -136,7 +190,6 @@ class EpisodicBuffer:
 
     def is_compatible(self, episode: Episode):
         """
-        TODO: CHECK THIS METHOD
         Checks if the episode is compatible with the current buffer configuration.
 
         :param episode: Episode object to check compatibility.
@@ -144,13 +197,7 @@ class EpisodicBuffer:
         :return: True if compatible, False otherwise.
         :rtype: bool
         """
-        if not self.input_labels or not self.output_labels:
-            self.configure_labels(episode)
-        
-        for label in self.input_labels + self.output_labels:
-            if label not in episode.__dict__:
-                return False
-        return True
+        raise NotImplementedError("is_compatible method is not implemented yet.")
         
 
     #### GETTERS / SETTERS ####
@@ -175,7 +222,7 @@ class EpisodicBuffer:
 
     def get_sample(self, index, main=True):
         """
-        WORK IN PROGRESS: Method to obtain a sample from the buffer.
+        Method to obtain a sample from the buffer.
 
         :param index: Index of the sample to obtain.
         :type index: int
@@ -192,8 +239,13 @@ class EpisodicBuffer:
     def get_dataset(self, shuffle=False, n_samples=None):
         """
         Returns the dataset as numpy arrays.
-        If shuffle=True, shuffles the arrays before returning.
-        If n_samples is provided, returns at most n_samples rows (sampled without replacement).
+
+        :param shuffle: Option to shuffle the dataset , defaults to False
+        :type shuffle: bool, optional
+        :param n_samples: Option to limit the number of samples returned, defaults to None
+        :type n_samples: int, optional
+        :return: Tuple containing training inputs, training outputs, test inputs, and test outputs as numpy arrays.
+        :rtype: tuple
         """
         x_train, y_train = self._get_samples_from_buffer(self.main_buffer, shuffle=shuffle, n_samples=n_samples)
         x_test, y_test = self._get_samples_from_buffer(self.secondary_buffer, shuffle=shuffle, n_samples=n_samples)
@@ -201,20 +253,26 @@ class EpisodicBuffer:
 
 
     def get_train_samples(self, shuffle=False, n_samples=None):
-        """
-        Returns the training samples as lists of input and output dicts.
-        :return: (inputs, outputs) where each is a numpy array
-        If shuffle=True, shuffles the arrays before returning.
-        If n_samples is provided, returns at most n_samples rows.
+        """Returns the training samples as lists of input and output dicts.
+
+        :param shuffle: Option to shuffle the samples, defaults to False
+        :type shuffle: bool, optional
+        :param n_samples: Option to limit the number of samples returned, defaults to None
+        :type n_samples: int, optional
+        :return: Tuple containing training inputs and training outputs as numpy arrays.
+        :rtype: tuple
         """
         return self._get_samples_from_buffer(self.main_buffer, shuffle=shuffle, n_samples=n_samples)
 
     def get_test_samples(self, shuffle=False, n_samples=None):
-        """
-        Returns the test samples as lists of input and output dicts.
-        :return: (inputs, outputs) where each is a numpy array
-        If shuffle=True, shuffles the arrays before returning.
-        If n_samples is provided, returns at most n_samples rows.
+        """Returns the test samples as lists of input and output dicts.
+
+        :param shuffle: Option to shuffle the samples, defaults to False
+        :type shuffle: bool, optional
+        :param n_samples: Option to limit the number of samples returned, defaults to None
+        :type n_samples: int, optional
+        :return: Tuple containing test inputs and test outputs as numpy arrays.
+        :rtype: tuple
         """
         return self._get_samples_from_buffer(self.secondary_buffer, shuffle=shuffle, n_samples=n_samples)
     
@@ -244,22 +302,42 @@ class EpisodicBuffer:
 
     @property
     def main_max_size(self):
-        """Returns the max size of the main buffer."""
+        """
+        Returns the max size of the main buffer.
+
+        :return: The maximum size of the main buffer.
+        :rtype: int
+        """        
         return self.main_buffer.maxlen if self.main_buffer.maxlen is not None else float('inf')
 
     @property
     def secondary_max_size(self):
-        """Returns the max size of the secondary buffer."""
+        """
+        Returns the max size of the secondary buffer.
+
+        :return: The maximum size of the secondary buffer.
+        :rtype: int
+        """        
         return self.secondary_buffer.maxlen if self.secondary_buffer.maxlen is not None else float('inf')
     
     @property
     def main_size(self):
-        """Returns the current size of the main buffer."""
+        """
+        Returns the current size of the main buffer.
+
+        :return: The current size of the main buffer.
+        :rtype: int
+        """
         return len(self.main_buffer)
 
     @property
     def secondary_size(self):
-        """Returns the current size of the secondary buffer."""
+        """
+        Returns the current size of the secondary buffer.
+
+        :return: The current size of the secondary buffer.
+        :rtype: int
+        """        
         return len(self.secondary_buffer)
     
     # HELPER METHODS
@@ -268,7 +346,14 @@ class EpisodicBuffer:
     def episode_to_flat_dict(episode: Episode, labels):
         """
         Converts an episode to a dict representation matching the labels.
-        """
+
+        :param episode: The episode to convert.
+        :type episode: Episode
+        :param labels: The labels to match in the dict representation.
+        :type labels: list
+        :return: A dict representation of the episode matching the labels.
+        :rtype: dict
+        """    
         vector = {}
         dimensions = [label.split(':') for label in labels]
         for label, instance in zip(labels, dimensions):
@@ -287,12 +372,20 @@ class EpisodicBuffer:
         return vector
     
     @staticmethod
-    def empty_episode(episode: Episode, inputs, outputs):
+    def empty_episode(episode: Episode, inputs: list, outputs: list):
         """
         Checks if an episode is empty.
+
+        :param episode: Episode object.
+        :type episode: Episode
+        :param inputs: Input labels to check.
+        :type inputs: list
+        :param outputs: Output labels to check.
+        :type outputs: list
+        :return: True if the episode is empty, False otherwise.
+        :rtype: bool
         """
         empty = True
-        vector = {}
         instances = inputs + outputs
         for instance in instances:
             if instance == "action":
@@ -306,8 +399,16 @@ class EpisodicBuffer:
     @staticmethod
     def episode_to_vector(episode: Episode, labels):
         """
-        Converts an episode to a vector representation matching the labels.
-        """
+        Converts an episode to a vector representation ordered according to the given labels.
+
+        :param episode: Episode object to convert.
+        :type episode: Episode
+        :param labels: Labels to match in the vector representation.
+        :type labels: list
+        :return: Vector representation of the episode.
+        :rtype: np.ndarray
+        """        
+
         flat_dict = EpisodicBuffer.episode_to_flat_dict(episode, labels)
         vector = np.zeros(len(labels))
         for i, label in enumerate(labels):
@@ -317,8 +418,16 @@ class EpisodicBuffer:
     @staticmethod
     def vector_to_episode(vector, labels):
         """
-        Converts a vector representation to an episode object.
-        """
+        Converts a vector representation to an episode object. 
+
+        :param vector: Vector representation of the episode.
+        :type vector: np.ndarray
+        :param labels: Labels to match in the vector representation.
+        :type labels: list
+        :raises ValueError: If the length of the vector does not match the number of labels.
+        :return: Episode object created from the vector.
+        :rtype: Episode
+        """        
         episode = Episode()
         if len(labels) != len(vector):
             raise ValueError("The length of the vector does not match the number of labels.")
@@ -392,8 +501,15 @@ class EpisodicBuffer:
     def _get_samples_from_buffer(self, buffer, shuffle=False, n_samples=None):
         """
         Internal helper to get (inputs, outputs) numpy arrays from a buffer.
-        If shuffle=True, shuffles the arrays before returning.
-        If n_samples is provided, returns at most n_samples rows sampled without replacement.
+
+        :param buffer: Episode buffer to extract samples from.
+        :type buffer: deque
+        :param shuffle: Whether to shuffle the samples, defaults to False
+        :type shuffle: bool, optional
+        :param n_samples: Number of samples to extract, defaults to None
+        :type n_samples: int, optional
+        :return: Tuple of (inputs, outputs) numpy arrays
+        :rtype: tuple
         """
         inputs = self.buffer_to_matrix(buffer, self.input_labels)
         if self.output_labels:
@@ -415,6 +531,16 @@ class EpisodicBuffer:
         return inputs, outputs
 
     def _shuffle_dataset(self, inputs, outputs):
+        """
+        Helper method to shuffle the dataset represented by numpy arrays.
+
+        :param inputs: Inputs array.
+        :type inputs: np.ndarray
+        :param outputs: Outputs array.
+        :type outputs: np.ndarray
+        :return: Tuple of shuffled (inputs, outputs) arrays.
+        :rtype: tuple
+        """        
         idx = self.rng.permutation(inputs.shape[0])
         inputs = inputs[idx]
         if len(outputs) > 0:
@@ -423,6 +549,16 @@ class EpisodicBuffer:
 
     @staticmethod
     def _extract_labels(io_list, episode, label_list):
+        """
+        Helper method to obtain the label list from a given episode.
+
+        :param io_list: List that specifies the fields to extract labels from.
+        :type io_list: list
+        :param episode: Episode object to extract labels from.
+        :type episode: Episode
+        :param label_list: List to append the extracted labels to.
+        :type label_list: list
+        """        
         for io in io_list:
             io_obj = getattr(episode, io)
             if isinstance(io_obj, Action):
@@ -447,6 +583,44 @@ class TraceBuffer(EpisodicBuffer):
     Trace Buffer class, a specialized version of the Episodic Buffer that stores traces of episodes.
     """
     def __init__(self, node, main_size, secondary_size=0, max_traces=10, min_traces=1, max_antitraces=5, train_split=1.0, inputs=[], outputs=[], evaluation_method='linear', reward_factor=1.0, random_seed=0, **params):
+        """Initialize a TraceBuffer for storing episode traces with utility values.
+
+        Creates buffers for successful traces and antitraces, evaluating episode utilities
+        based on final rewards using configurable evaluation methods.
+
+        :param node: Owning cognitive node used for logging and ROS2 integration.
+        :type node: CognitiveNode
+        :param main_size: Maximum number of episodes stored in a single trace before completion.
+        :type main_size: int
+        :param secondary_size: Maximum number of episodes in secondary buffer (unused in TraceBuffer), defaults to 0
+        :type secondary_size: int, optional
+        :param max_traces: Maximum number of successful traces to retain, defaults to 10
+        :type max_traces: int, optional
+        :param min_traces: Minimum number of traces required before allowing antitraces to be added, defaults to 1
+        :type min_traces: int, optional
+        :param max_antitraces: Maximum number of failed traces (antitraces) to retain, defaults to 5
+        :type max_antitraces: int, optional
+        :param train_split: Fraction of episodes for training (inherited but unused in TraceBuffer), defaults to 1.0
+        :type train_split: float, optional
+        :param inputs: Episode fields considered inputs/features (e.g., ['old_perception', 'action']), defaults to []
+        :type inputs: list, optional
+        :param outputs: Episode fields considered outputs/targets (e.g., ['perception']), defaults to []
+        :type outputs: list, optional
+        :param evaluation_method: Method for computing utility values ('linear', 'exponential', 'goal_only'), defaults to 'linear'
+        :type evaluation_method: str, optional
+        :param reward_factor: Multiplicative factor applied to the final reward in utility calculation, defaults to 1.0
+        :type reward_factor: float, optional
+        :param random_seed: Seed for the internal Numpy RNG used for shuffling and sampling, defaults to 0
+        :type random_seed: int, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+
+
+        Notes:
+        - Traces are stored as lists of (episode, utility) tuples.
+        - Utility values are computed when a trace completes based on the evaluation method.
+        - Antitraces represent failed sequences and have zero utility values.
+        """
         super().__init__(node, main_size, secondary_size, train_split, inputs, outputs, random_seed, **params)
         self.traces_buffer = deque(maxlen=max_traces)
         self.antitraces_buffer = deque(maxlen=max_antitraces)
@@ -457,6 +631,27 @@ class TraceBuffer(EpisodicBuffer):
         self.reward_factor = reward_factor
 
     def add_episode(self, episode, reward=0.0):
+        """Add an episode to the trace buffer and complete the trace if reward is positive.
+
+        Appends the episode to the main buffer. If a positive reward is provided,
+        evaluates utilities for all episodes in the current trace, stores the trace,
+        and clears the buffer to begin a new trace.
+
+        :param episode: Episode instance to add to the current trace.
+        :type episode: Episode
+        :param reward: Reward value for the trace; positive values trigger trace completion, defaults to 0.0
+        :type reward: float, optional
+        :raises ValueError: If episode is not of type Episode.
+
+        :return: None
+        :rtype: None
+
+        Notes:
+        - Only episodes of type Episode are accepted.
+        - Labels are configured on the first episode if not already set.
+        - Positive rewards trigger utility evaluation and trace storage.
+        - The buffer is cleared after storing a successful trace.
+        """
         if type(episode) is not Episode:
             raise ValueError("The episode must be of type Episode.")
         if (not self.input_labels and self.inputs) or (not self.output_labels and self.outputs):
@@ -473,12 +668,25 @@ class TraceBuffer(EpisodicBuffer):
             self.clear()
 
     def add_antitrace(self):
+        """Add an antitrace to the buffer if enough traces exist.
+        """        
         if self.n_traces >= self.min_traces: # If the buffer is full, and there are enough traces, add an antitrace
             self.node.get_logger().info("Adding antitrace")
             self.antitraces_buffer.append(list(zip(self.main_buffer, np.zeros(self.main_max_size))))
             self.clear()
 
     def evaluate_trace(self, reward):
+        """Compute utility values for each episode in the current trace.
+
+        Uses the configured evaluation method to assign utility values to all episodes
+        in the main buffer based on the final reward. The evaluation method determines
+        how utility is distributed across the episode sequence.
+
+        :param reward: Final reward value for the trace used to compute utilities.
+        :type reward: float
+        :return: List of utility values, one per episode in the trace.
+        :rtype: list[float]
+        """
         n = len(self.main_buffer)
         if n == 0:
             return []
@@ -487,6 +695,16 @@ class TraceBuffer(EpisodicBuffer):
         return values
 
     def get_flattened_traces(self, n_samples=None):
+        """Flatten stored traces into a single buffer with corresponding utilities.
+
+        Optionally samples a subset of traces, then flattens all (episode, utility) pairs
+        from the selected traces into a single sequential buffer.
+
+        :param n_samples: Maximum number of traces to sample; if None, uses all traces, defaults to None
+        :type n_samples: int | None, optional
+        :return: Tuple of (episode buffer, utilities array) containing flattened trace data.
+        :rtype: tuple[list, np.ndarray]
+        """
         if n_samples is not None:
             if len(self.traces_buffer) > n_samples:
                 idx = self.rng.choice(len(self.traces_buffer), size=n_samples, replace=False)
@@ -500,31 +718,71 @@ class TraceBuffer(EpisodicBuffer):
         return buffer, np.array(utilities)
 
     def get_dataset(self, shuffle=True, n_samples=None):
+        """Return training dataset from flattened traces as numpy arrays.
+
+        Flattens stored traces into episode states and utilities, optionally shuffling
+        the resulting dataset.
+
+        :param shuffle: Whether to shuffle the dataset, defaults to True
+        :type shuffle: bool, optional
+        :param n_samples: Maximum number of traces to include; if None, uses all traces, defaults to None
+        :type n_samples: int | None, optional
+        :return: Tuple of (states, utilities) numpy arrays for training.
+        :rtype: tuple[np.ndarray, np.ndarray]
+        """
         buffer, utilities = self.get_flattened_traces(n_samples)
         states, _ = self._get_samples_from_buffer(buffer, shuffle=False)
         x_train, y_train = self._shuffle_dataset(states, utilities) if shuffle else (states, utilities)
         return x_train, y_train
     
     def reset_new_sample_count(self, main=True, secondary=True):
-            """
-            Resets the new sample count for the trace buffer.
+        """
+        Resets the new sample count for the trace buffer.
 
-            :param main: Unused in this class, defaults to True.
-            :type main: bool
-            :param secondary: Unused in this class, defaults to True.
-            :type secondary: bool
-            """
-            self.new_traces = 0
+        :param main: Unused in this class, defaults to True.
+        :type main: bool
+        :param secondary: Unused in this class, defaults to True.
+        :type secondary: bool
+        """
+        self.new_traces = 0
 
     @staticmethod
     def eval_default(reward, min_val, reward_factor, n, full_length):
+        """Default evaluation method placeholder.
+
+        :param reward: Final reward for the trace.
+        :type reward: float
+        :param min_val: Minimum utility value derived from the reward (e.g., reward * min_utility_fraction).
+        :type min_val: float
+        :param reward_factor: Multiplicative factor applied to the final utility value.
+        :type reward_factor: float
+        :param n: Number of episodes in the current trace.
+        :type n: int
+        :param full_length: Maximum possible length of a trace (main buffer capacity).
+        :type full_length: int
+        :raises NotImplementedError: Always, as this method is a placeholder.
+        """
         raise NotImplementedError(f"Evaluation method requested is not implemented.")
 
     @staticmethod
     def eval_linear(reward, min_val, reward_factor, n, full_length):
-        """
-        Linear evaluation function: f(x) = start_val + (reward - start_val) * x / (n - 1)
-        where x ranges from 0 to (n-1)
+        """Linear evaluation: interpolate utilities from a start value to the final reward.
+
+        Computes a start value consistent with the full-length trace and linearly
+        interpolates utilities across episodes, ending at reward * reward_factor.
+
+        :param reward: Final reward for the trace.
+        :type reward: float
+        :param min_val: Minimum utility value derived from the reward.
+        :type min_val: float
+        :param reward_factor: Multiplicative factor applied to the final utility value.
+        :type reward_factor: float
+        :param n: Number of episodes in the current trace.
+        :type n: int
+        :param full_length: Maximum possible length of a trace (main buffer capacity).
+        :type full_length: int
+        :return: List of length n with linearly increasing utility values.
+        :rtype: list[float]
         """
         if n == 1:
             return [reward]
@@ -542,10 +800,24 @@ class TraceBuffer(EpisodicBuffer):
 
     @staticmethod
     def eval_exponential(reward, min_val, reward_factor, n, full_length):
-        """
-        Exponential evaluation function: f(x) = min_val * exp(k * x)
-        where k = ln(reward/min_val) / (full_length-1) and x ranges from (full_length-n) to (full_length-1)
-        This ensures consistency - shorter sequences are slices of the full sequence.
+        """Exponential evaluation: grow utilities exponentially towards the final reward.
+
+        Uses k = ln(reward/min_val) / (full_length - 1) and evaluates utilities at
+        positions [full_length - n, ..., full_length - 2], appending reward * reward_factor
+        as the final value.
+
+        :param reward: Final reward for the trace.
+        :type reward: float
+        :param min_val: Minimum utility value derived from the reward; adjusted if non-positive.
+        :type min_val: float
+        :param reward_factor: Multiplicative factor applied to the final utility value.
+        :type reward_factor: float
+        :param n: Number of episodes in the current trace.
+        :type n: int
+        :param full_length: Maximum possible length of a trace (main buffer capacity).
+        :type full_length: int
+        :return: List of length n with exponentially increasing utility values.
+        :rtype: list[float]
         """
         if n == 1:
             return [reward*reward_factor]
@@ -569,26 +841,60 @@ class TraceBuffer(EpisodicBuffer):
     
     @staticmethod
     def eval_goal_only(reward, min_val, reward_factor, n, full_length):
-        """
-        Goal only evaluation function: f(x) = reward if x == n-1 else 0
+        """Goal-only evaluation: zero utility except at the final episode.
+
+        Assigns 0.0 to all episodes except the last, which receives reward * reward_factor.
+
+        :param reward: Final reward for the trace.
+        :type reward: float
+        :param min_val: Minimum utility value (unused in this method).
+        :type min_val: float
+        :param reward_factor: Multiplicative factor applied to the final utility value.
+        :type reward_factor: float
+        :param n: Number of episodes in the current trace.
+        :type n: int
+        :param full_length: Maximum possible length of a trace (unused in this method).
+        :type full_length: int
+        :return: List of length n with zero utilities except the final element.
+        :rtype: list[float]
         """
         values = [0.0] * (n - 1) + [reward*reward_factor]
         return values
 
     @property
     def max_traces(self):
+        """Maximum capacity of the traces buffer.
+
+        :return: Max number of traces retained.
+        :rtype: int
+        """
         return self.traces_buffer.maxlen
 
     @property
     def max_antitraces(self):
+        """Maximum capacity of the antitraces buffer.
+
+        :return: Max number of antitraces retained.
+        :rtype: int
+        """
         return self.antitraces_buffer.maxlen
     
     @property
     def n_traces(self):
+        """Current number of stored traces.
+
+        :return: Count of traces in the buffer.
+        :rtype: int
+        """
         return len(self.traces_buffer)
 
     @property
     def n_antitraces(self):
+        """Current number of stored antitraces.
+
+        :return: Count of antitraces in the buffer.
+        :rtype: int
+        """
         return len(self.antitraces_buffer)
 
 

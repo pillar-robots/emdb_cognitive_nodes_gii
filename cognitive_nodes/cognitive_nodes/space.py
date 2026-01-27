@@ -729,7 +729,8 @@ class ANNSpace(PointBasedSpace):
         # self.n_splits = 5
         self.batch_size = 50
         self.epochs = 50
-        self.max_data = 400
+        self.max_data = 2000
+        self.sampled_points = 200
         self.train_every = 20
         self.new_points = 0
         # Define the Neural Network's model
@@ -815,22 +816,24 @@ class ANNSpace(PointBasedSpace):
             pos = super().add_point(perception, confidence)
             self.new_points += 1
 
-            # if self.size >= self.max_data:
-            #     self.first_data = self.size - self.max_data
-
             if self.new_points>=self.train_every: #HACK: Train only every certain number of new points
                 self.logger.info(f"Training on {self.new_points}") #TODO: Pass pnode logger to space
-                    
+                if self.size > self.max_data:
+                    self.logger.info(f"Using last {self.max_data} points for training.") #TODO: Pass pnode logger to space
+                    first_data = self.size - self.max_data
+                else:
+                    first_data = 0
+
                 members = structured_to_unstructured(
-                    self.members[0 : self.size][list(self.members.dtype.names)]
+                    self.members[first_data : self.size][list(self.members.dtype.names)]
                 )
-                memberships = self.memberships[0 : self.size].copy()
+                memberships = self.memberships[first_data : self.size].copy()
                 memberships[memberships > 0] = 1.0
                 memberships[memberships <= 0] = 0.0
 
-
-                n_samples = min(self.max_data, self.size)
-                idx = self.rng.choice(self.size, size=n_samples, replace=False)
+                members_size = len(members)
+                n_samples = min(self.sampled_points, members_size)
+                idx = self.rng.choice(members_size, size=n_samples, replace=False)
 
                 X = members[idx]
                 Y = memberships[idx]

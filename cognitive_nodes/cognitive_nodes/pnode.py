@@ -318,7 +318,7 @@ class PNode(CognitiveNode):
         """
         self.get_logger().info('Saving model...')
         if self.space is not None and hasattr(self.space, 'save_model'):
-            model_name = f"{request.prefix}_{self.name}_{request.suffix}"
+            model_name = f"{request.prefix}{self.name}{request.suffix}"
             try:
                 success, path = self.space.save_model(model_name)
             except Exception as e:

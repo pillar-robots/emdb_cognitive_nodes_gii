@@ -11,7 +11,7 @@ from cognitive_nodes.episode import Episode, episode_msg_to_obj, episode_obj_to_
 from cognitive_nodes.episodic_buffer import EpisodicBuffer, TraceBuffer
 from cognitive_processes.deliberation import Deliberation
 
-from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, ANNLearner_torch, Evaluator
+from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, Evaluator
 from cognitive_node_interfaces.srv import Execute, AddTrace
 import pandas as pd
 
@@ -21,16 +21,25 @@ class UtilityModel(DeliberativeModel):
     Utility Model class
     """
     def __init__(self, name='utility_model', class_name = 'cognitive_nodes.utility_model.UtilityModel', prediction_srv_type="cognitive_node_interfaces.srv.PredictUtility", trace_length=20, max_iterations=20, candidate_actions = 5, ltm_id="", **params):
-        """
-        Constructor of the Utility Model class.
+        """Initialize the Utility Model with deliberation and learning capabilities.
 
-        Initializes a Utility Model instance with the given name and registers it in the LTM.
-
-        :param name: The name of the Utility Model instance.
-        :type name: str
-        :param class_name: The name of the Utility Model class.
-        :type class_name: str
-        """
+        :param name: The name of the Utility Model instance, defaults to 'utility_model'
+        :type name: str, optional
+        :param class_name: The fully qualified class name for the Utility Model, defaults to 'cognitive_nodes.utility_model.UtilityModel'
+        :type class_name: str, optional
+        :param prediction_srv_type: The service type for predictions, defaults to "cognitive_node_interfaces.srv.PredictUtility"
+        :type prediction_srv_type: str, optional
+        :param trace_length: Maximum number of traces to store in the episodic buffer, defaults to 20
+        :type trace_length: int, optional
+        :param max_iterations: Maximum number of iterations for the deliberation process, defaults to 20
+        :type max_iterations: int, optional
+        :param candidate_actions: Number of candidate actions to generate during deliberation, defaults to 5
+        :type candidate_actions: int, optional
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation, defaults to ""
+        :type ltm_id: str, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """        
         super().__init__(name, class_name, prediction_srv_type=prediction_srv_type, node_type="utility_model", **params)
         self.configure_activation_inputs(self.neighbors)
         self.setup_model(trace_length=trace_length, max_iterations=max_iterations, candidate_actions=candidate_actions, ltm_id=ltm_id, **params)
@@ -42,9 +51,19 @@ class UtilityModel(DeliberativeModel):
         )
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, **params):
-        """
-        Sets up the Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
-        """
+        """Sets up the Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
+
+        :param trace_length: Maximum number of traces to store in the trace buffer.
+        :type trace_length: int
+        :param max_iterations: Maximum number of iterations for the deliberation process.
+        :type max_iterations: int
+        :param candidate_actions: Number of candidate actions to generate during deliberation.
+        :type candidate_actions: int
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation.
+        :type ltm_id: str
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """        
         self.episodic_buffer = TraceBuffer(self, main_size=trace_length, inputs=['perception'], outputs=[], **params)
         self.learner = DefaultUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
@@ -52,21 +71,23 @@ class UtilityModel(DeliberativeModel):
         self.spin_deliberation()
 
     def spin_deliberation(self):
+        """Starts a separate thread to spin the deliberation executor.
+        """        
         self.deliberation_executor = SingleThreadedExecutor()
         self.deliberation_executor.add_node(self.deliberation)
         self.deliberation_thread = threading.Thread(target=self.deliberation_executor.spin)
         self.deliberation_thread.start()
 
     def calculate_activation(self, perception = None, activation_list=None):
-        """
-        Returns the the activation value of the Utility Model.
-        Dummy, for the moment, as it returns a random value.
+        """Calculate the activation level of the utility model based on perception or activation inputs.
 
-        :param perception: The given perception.
-        :type perception: dict
-        :return: The activation of the instance.
-        :rtype: float
-        """
+        :param perception: Perception data to use for activation calculation, defaults to None
+        :type perception: dict, optional
+        :param activation_list: List of activations from connected nodes to aggregate, defaults to None
+        :type activation_list: list, optional
+        :return: None
+        :rtype: None
+        """        
         if activation_list and self.learner.configured:
             self.calculate_activation_max(activation_list)
         else:
@@ -74,10 +95,17 @@ class UtilityModel(DeliberativeModel):
             self.activation.timestamp=self.get_clock().now().to_msg()
 
     def predict(self, input_episodes: list[Episode]) -> list[float]:
-            input_data = self.episodic_buffer.buffer_to_matrix(input_episodes, self.episodic_buffer.input_labels)
-            expected_utilities = self.learner.call(input_data)
-            self.get_logger().info(f"Predictions: {expected_utilities}")
-            return expected_utilities
+        """Predict the expected utilities for a list of input episodes using the learner model.
+
+        :param input_episodes: List of Episode objects to predict utilities for.
+        :type input_episodes: list[Episode]
+        :return: List of predicted utility values, one for each input episode.
+        :rtype: list[float]
+        """        
+        input_data = self.episodic_buffer.buffer_to_matrix(input_episodes, self.episodic_buffer.input_labels)
+        expected_utilities = self.learner.call(input_data)
+        self.get_logger().info(f"Predictions: {expected_utilities}")
+        return expected_utilities
     
     def execute_callback(self, request, response):
         """
@@ -111,6 +139,21 @@ class NoveltyUtilityModel(UtilityModel):
         super().__init__(name=name, class_name=class_name, prediction_srv_type=prediction_srv_type, trace_length=trace_length, max_iterations=max_iterations, candidate_actions=candidate_actions, ltm_id=ltm_id, min_traces=min_traces, max_traces=max_traces, max_antitraces=max_antitraces, **params)
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, train_traces=1, max_traces=50, **params):
+        """Sets up the Novelty Utility Model by initializing the episodic buffer, learner, and deliberation process.
+
+        :param trace_length: Maximum number of traces to store in the episodic buffer.
+        :type trace_length: int
+        :param max_iterations: Maximum number of iterations for the deliberation process.
+        :type max_iterations: int
+        :param candidate_actions: Number of candidate actions to generate during deliberation.
+        :type candidate_actions: int
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation.
+        :type ltm_id: str
+        :param train_traces: Minimum number of positive traces required in the buffer, defaults to 1
+        :type train_traces: int, optional
+        :param max_traces: Maximum number of traces to store in the buffer, defaults to 50
+        :type max_traces: int, optional
+        """        
         self.episodic_buffer = EpisodicBuffer(self, main_size=trace_length, secondary_size=0, train_split=1.0, inputs=['perception'], outputs=[], **params)
         self.learner = NoveltyUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
@@ -141,6 +184,23 @@ class HardCodedUtilityModel(UtilityModel):
         self.get_logger().info("HardCodedUtilityModel initialized")
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, train_traces=1, max_traces=50, **params):
+        """Sets up the Hard Coded Utility Model by initializing the episodic buffer, learner, and deliberation process.
+
+        :param trace_length: Maximum number of traces to store in the trace buffer.
+        :type trace_length: int
+        :param max_iterations: Maximum number of iterations for the deliberation process.
+        :type max_iterations: int
+        :param candidate_actions: Number of candidate actions to generate during deliberation.
+        :type candidate_actions: int
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation.
+        :type ltm_id: str
+        :param train_traces: Minimum number of positive traces required in the buffer, defaults to 1
+        :type train_traces: int, optional
+        :param max_traces: Maximum number of traces to store in the buffer, defaults to 50
+        :type max_traces: int, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """        
         self.episodic_buffer =  TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_p_traces=train_traces, inputs=['perception'], outputs=[], **params)
         self.learner = DefaultUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = None
@@ -148,7 +208,16 @@ class HardCodedUtilityModel(UtilityModel):
         self.spin_deliberation()
     
     def predict(self, input_episodes: list[Episode]) -> list[float]:
-        "Work in progress"
+        """Predict utilities for input episodes using hard-coded heuristics for ball-to-box task.
+        
+        Computes utilities based on distances and angles between robot arms, ball, and target box,
+        with penalties for suboptimal configurations and rewards for goal-oriented states.
+
+        :param input_episodes: List of Episode objects containing perception data to evaluate.
+        :type input_episodes: list[Episode]
+        :return: List of normalized utility values (0-1 range) for each input episode.
+        :rtype: list[float]
+        """        
         distances = []
         i = 0
         for episode in input_episodes:
@@ -214,10 +283,6 @@ class HardCodedUtilityModel(UtilityModel):
         utilities = 1 - normalized_distances
         self.get_logger().info(f"Prediction made: {utilities}")
         return utilities
-
-    def execute_callback(self, request, response):
-        response = super().execute_callback(request, response)
-        return response
     
     def denormalize(self, input_dict, config):
         """
@@ -254,7 +319,9 @@ class HardCodedUtilityModel(UtilityModel):
         return out
 
 class LearnedUtilityModel(UtilityModel):
-
+    """
+    Learned Utility Model class: A utility model that learns from episodic traces to predict utilities.
+    """    
     def __init__(
         self,
         name="utility_model",
@@ -272,6 +339,37 @@ class LearnedUtilityModel(UtilityModel):
         ltm_id="",
         **params,
     ):
+        """Initialize the Learned Utility Model with machine learning capabilities.
+
+        :param name: The name of the Utility Model instance, defaults to "utility_model"
+        :type name: str, optional
+        :param class_name: The fully qualified class name for the Utility Model, defaults to "cognitive_nodes.utility_model.UtilityModel"
+        :type class_name: str, optional
+        :param prediction_srv_type: The service type for predictions, defaults to "cognitive_node_interfaces.srv.PredictUtility"
+        :type prediction_srv_type: str, optional
+        :param trace_length: Maximum number of traces to store in the episodic buffer, defaults to 20
+        :type trace_length: int, optional
+        :param max_iterations: Maximum number of iterations for the deliberation process, defaults to 20
+        :type max_iterations: int, optional
+        :param candidate_actions: Number of candidate actions to generate during deliberation, defaults to 5
+        :type candidate_actions: int, optional
+        :param min_traces: Minimum number of traces required before training can begin, defaults to 5
+        :type min_traces: int, optional
+        :param max_traces: Maximum number of traces to store in the buffer, defaults to 50
+        :type max_traces: int, optional
+        :param max_antitraces: Maximum number of antitraces (negative examples) to store, defaults to 10
+        :type max_antitraces: int, optional
+        :param train_traces: Number of new traces required to trigger a training step, defaults to 5
+        :type train_traces: int, optional
+        :param validation_split: Fraction of data to use for validation during training, defaults to 0.1
+        :type validation_split: float, optional
+        :param reward_factor: Scaling factor applied to rewards, defaults to 1.0
+        :type reward_factor: float, optional
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation, defaults to ""
+        :type ltm_id: str, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """        
         super().__init__(
             name=name,
             class_name=class_name,
@@ -306,21 +404,45 @@ class LearnedUtilityModel(UtilityModel):
 
         self.train_traces = train_traces
         self.validation_split = validation_split
+        self.update_semaphore = threading.Semaphore()
 
         self.get_logger().info(f"Utility Model created: {self.name}")
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, min_traces=1, max_traces=50, max_antitraces=10, **params):
-        """
-        Sets up the Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
-        """
+        """Sets up the Learned Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
+
+        :param trace_length: Maximum number of traces to store in the trace buffer.
+        :type trace_length: int
+        :param max_iterations: Maximum number of iterations for the deliberation process.
+        :type max_iterations: int
+        :param candidate_actions: Number of candidate actions to generate during deliberation.
+        :type candidate_actions: int
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation.
+        :type ltm_id: str
+        :param min_traces: Minimum number of traces required before training can begin, defaults to 1
+        :type min_traces: int, optional
+        :param max_traces: Maximum number of traces to store in the buffer, defaults to 50
+        :type max_traces: int, optional
+        :param max_antitraces: Maximum number of antitraces (negative examples) to store, defaults to 10
+        :type max_antitraces: int, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """        
         self.episodic_buffer = TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_traces=min_traces, max_antitraces=max_antitraces, inputs=['perception'], outputs=[], **params)
-        self.learner = ANNLearner_torch(self, self.episodic_buffer, **params)
+        self.learner = ANNLearner(self, self.episodic_buffer, **params)
         self.alternative_learner = DefaultUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
         self.deliberation = Deliberation(f"{self.name}_deliberation", self, iterations=max_iterations, candidate_actions=candidate_actions, LTM_id=ltm_id, clear_buffer=True, **params)
         self.spin_deliberation()
 
     def predict(self, input_episodes: list[Episode]) -> list[float]:
+        """Predict utilities for input episodes using the learner model.
+
+        :param input_episodes: List of Episode objects to predict utilities for.
+        :type input_episodes: list[Episode]
+        :return: List of predicted utility values for each input episode.
+        :rtype: list[float]
+        """        
         input_data = self.episodic_buffer.buffer_to_matrix(input_episodes, self.episodic_buffer.input_labels)
         predictions = self.learner.call(input_data)
         if predictions is None:
@@ -331,6 +453,8 @@ class LearnedUtilityModel(UtilityModel):
         return predictions
 
     def train_step(self):
+        """Perform a training step for the utility model if sufficient new traces are available.
+        """        
         if self.episodic_buffer.n_traces >= self.min_traces and self.episodic_buffer.new_traces >= self.train_traces:
             sample_size = max(self.train_traces, self.episodic_buffer.new_traces)
             self.get_logger().info(f"Training Utility Model with {sample_size} new traces")
@@ -339,12 +463,36 @@ class LearnedUtilityModel(UtilityModel):
             self.episodic_buffer.reset_new_sample_count()
 
     def execute_callback(self, request, response):
+        """Execute the deliberation process and perform a training step if sufficient traces are available.
+        
+        This method extends the parent class execution callback by adding a training step
+        after deliberation completes. It logs the current state of the episodic buffer
+        including trace counts and triggers model training if the minimum trace threshold is met.
+
+        :param request: The request object from the Execute service containing execution parameters.
+        :type request: cognitive_node_interfaces.srv.Execute.Request
+        :param response: The response object to be populated with execution results.
+        :type response: cognitive_node_interfaces.srv.Execute.Response
+        :return: The response object containing the policy name and summary episode from deliberation.
+        :rtype: cognitive_node_interfaces.srv.Execute.Response
+        """       
         response = super().execute_callback(request, response)
         self.get_logger().info(f"Total traces: {self.episodic_buffer.n_traces}, Total antitraces: {self.episodic_buffer.n_antitraces} New traces: {self.episodic_buffer.new_traces}, Min traces: {self.min_traces} {self.episodic_buffer.min_traces}")
         self.train_step()
         return response
 
     def episode_callback(self, msg):
+        """Handle incoming episode messages and update the episodic buffer and learning model.
+
+        This callback processes episode messages from other policies. It handles world resets by clearing
+        the buffer and processes new episodes by extracting rewards for linked goals, adding them to the
+        episodic buffer, and triggering model training if positive rewards are present. Long-term memory
+        is asynchronously updated in a separate thread when new successful traces are added.
+
+        :param msg: The episode message received from the subscription, containing perception data,
+                    rewards, and parent policy information.
+        :type msg: cognitive_node_interfaces.msg.Episode
+        """        
         if msg.parent_policy == "reset_world":
             self.get_logger().info("World reset detected, clearing buffer")
             self.episodic_buffer.clear()
@@ -356,11 +504,40 @@ class LearnedUtilityModel(UtilityModel):
             self.episodic_buffer.add_episode(episode, max(rewards, default=0.0))
             if any(rewards):
                 self.get_logger().info(f"New trace added to episodic buffer. Total traces: {self.episodic_buffer.n_traces}, Min traces: {self.episodic_buffer.min_traces}")
-                self.deliberation.update_pnodes_reward_basis(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache)
+                ltm_update_thread = threading.Thread(target=self.update_ltm, args=(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache))
+                ltm_update_thread.start()
                 self.train_step()
+
+    def update_ltm(self, old_perception, perception, policy, reward_list, ltm_cache):
+        """Update the Long-Term Memory cache with new reward basis information.
+        This method updates the Long-Term Memory (LTM) cache with new reward basis information
+        based on the provided perceptions, policy, and reward list. It uses a semaphore to ensure
+        thread-safe access to the LTM during the update process.
+        :param old_perception: The previous perception state before the episode.
+        :type old_perception: dict
+        :param perception: The current perception state after the episode.
+        :type perception: dict
+        :param policy: The policy name associated with the episode.
+        :type policy: str
+        :param reward_list: The list of rewards associated with the episode.
+        :type reward_list: dict
+        :param ltm_cache: The Long-Term Memory cache to be updated.
+        :type ltm_cache: dict
+        """
+        self.update_semaphore.acquire()
+        self.deliberation.update_pnodes_reward_basis(old_perception, perception, policy, reward_list, ltm_cache)
+        self.update_semaphore.release()
         
 
     def add_trace_callback(self, request, response):
+        """Service callback to add traces to the episodic buffer.
+        :param request: The request object containing episodes and rewards to be added.
+        :type request: cognitive_node_interfaces.srv.AddTrace.Request
+        :param response: The response object to be populated with the result of the addition.
+        :type response: cognitive_node_interfaces.srv.AddTrace.Response
+        :return: The response object indicating whether the traces were successfully added.
+        :rtype: cognitive_node_interfaces.srv.AddTrace.Response
+        """
         episodes = episode_msg_list_to_obj_list(request.episodes)
         rewards = request.rewards
         for episode, reward in zip(episodes, rewards):
@@ -384,6 +561,14 @@ class DummyUtilityModel(LearnedUtilityModel):
         return self.activation
 
 class QUtilityModel(LearnedUtilityModel):
+    """
+    Q-Learning Utility Model class: A utility model that uses Q-learning to predict utilities.
+    
+    This model implements a Q-learning approach with a target network for stable training.
+    It maintains two neural networks: a main learner and a target learner that are 
+    periodically synchronized. The model predicts Q-values for state-action pairs and 
+    uses these to compute optimal utilities during deliberation.
+    """
     def __init__(
             self, 
             name="utility_model", 
@@ -404,6 +589,43 @@ class QUtilityModel(LearnedUtilityModel):
             ltm_id="", 
             **params
             ):
+        """Initialize the Q-Learning Utility Model with target network.
+
+        :param name: The name of the Utility Model instance, defaults to "utility_model"
+        :type name: str, optional
+        :param class_name: The fully qualified class name for the Utility Model, defaults to "cognitive_nodes.utility_model.UtilityModel"
+        :type class_name: str, optional
+        :param prediction_srv_type: The service type for predictions, defaults to "cognitive_node_interfaces.srv.PredictUtility"
+        :type prediction_srv_type: str, optional
+        :param trace_length: Maximum number of traces to store in the episodic buffer, defaults to 20
+        :type trace_length: int, optional
+        :param max_iterations: Maximum number of iterations for the deliberation process, defaults to 20
+        :type max_iterations: int, optional
+        :param candidate_actions: Number of candidate actions to generate during deliberation, defaults to 5
+        :type candidate_actions: int, optional
+        :param min_traces: Minimum number of traces required before training can begin, defaults to 5
+        :type min_traces: int, optional
+        :param max_traces: Maximum number of traces to store in the buffer, defaults to 50
+        :type max_traces: int, optional
+        :param max_antitraces: Maximum number of antitraces (negative examples) to store, defaults to 10
+        :type max_antitraces: int, optional
+        :param train_traces: Number of new traces required to trigger a training step, defaults to 5
+        :type train_traces: int, optional
+        :param train_every: Frequency of training updates (number of new traces before training), defaults to 1
+        :type train_every: int, optional
+        :param replace_every: Number of training steps before updating target network, defaults to 5
+        :type replace_every: int, optional
+        :param discount_factor: Discount factor for future rewards in Q-value calculation, defaults to 0.90
+        :type discount_factor: float, optional
+        :param validation_split: Fraction of data to use for validation during training, defaults to 0.1
+        :type validation_split: float, optional
+        :param reward_factor: Scaling factor applied to rewards, defaults to 1.0
+        :type reward_factor: float, optional
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation, defaults to ""
+        :type ltm_id: str, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
+        """        
         super().__init__(
             name=name, 
             class_name=class_name, 
@@ -429,18 +651,40 @@ class QUtilityModel(LearnedUtilityModel):
 
 
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, min_traces=1, max_traces=50, max_antitraces=10, **params):
-        """
-        Sets up the Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
+        """Sets up the Q-Learning Utility Model by initializing dual networks and episodic buffer.
+        
+        :param trace_length: Maximum number of traces to store in the trace buffer.
+        :type trace_length: int
+        :param max_iterations: Maximum number of iterations for the deliberation process.
+        :type max_iterations: int
+        :param candidate_actions: Number of candidate actions to generate during deliberation.
+        :type candidate_actions: int
+        :param ltm_id: Identifier for the Long-Term Memory cache used in deliberation.
+        :type ltm_id: str
+        :param min_traces: Minimum number of traces required before training can begin, defaults to 1
+        :type min_traces: int, optional
+        :param max_traces: Maximum number of traces to store in the buffer, defaults to 50
+        :type max_traces: int, optional
+        :param max_antitraces: Maximum number of antitraces (negative examples) to store, defaults to 10
+        :type max_antitraces: int, optional
+        :param params: Additional keyword parameters reserved for future use.
+        :type params: dict
         """
         self.episodic_buffer = TraceBuffer(self, main_size=trace_length, max_traces=max_traces, min_traces=min_traces, max_antitraces=max_antitraces, inputs=['perception'], outputs=[], **params)
-        self.learner = ANNLearner_torch(self, self.episodic_buffer, **params)
-        self.target_learner = ANNLearner_torch(self, self.episodic_buffer, **params)
+        self.learner = ANNLearner(self, self.episodic_buffer, **params)
+        self.target_learner = ANNLearner(self, self.episodic_buffer, **params)
         self.alternative_learner = DefaultUtilityModelLearner(self, self.episodic_buffer, **params)
         self.confidence_evaluator = DefaultUtilityEvaluator(self, self.learner, self.episodic_buffer, **params)
         self.deliberation = Deliberation(f"{self.name}_deliberation", self, iterations=max_iterations, candidate_actions=candidate_actions, LTM_id=ltm_id, clear_buffer=True, **params)
         self.spin_deliberation()
     
     def train_step(self):
+        """Perform a training step using Q-learning with target network updates.
+        
+        Initializes both the main and target learners on first training. Computes Q-values
+        for next states using the target network and updates the main learner with computed
+        Q-targets. Periodically synchronizes the target network with the main learner weights.
+        """
         if self.episodic_buffer.n_traces >= self.min_traces and self.episodic_buffer.new_traces >= self.train_every:
             # Initialize both learners if not configured
             if not self.learner.configured:
@@ -484,6 +728,15 @@ class QUtilityModel(LearnedUtilityModel):
                 self.train_step_count = 0
 
     def predict(self, input_episodes: list[Episode], target_learner=False) -> list[float]:
+        """Predict Q-values for input episodes using either main or target learner.
+        
+        :param input_episodes: List of Episode objects to predict Q-values for.
+        :type input_episodes: list[Episode]
+        :param target_learner: If True, use target network for predictions; otherwise use main learner, defaults to False
+        :type target_learner: bool, optional
+        :return: List of predicted Q-values for each input episode.
+        :rtype: list[float]
+        """
         input_data = self.episodic_buffer.buffer_to_matrix(input_episodes, self.episodic_buffer.input_labels)
         learner = self.target_learner if target_learner else self.learner
         predictions = learner.call(input_data)
@@ -496,10 +749,17 @@ class QUtilityModel(LearnedUtilityModel):
 
 
     def generate_candidates_matrix(self, buffer, algorithm="latin"):
-        """
-        Given states as a numpy array (n_states, state_dim), return a numpy array
-        of shape (n_states * candidate_actions, state_dim + actuation_dims)
-        where each state is concatenated with each candidate action.
+        """Generate candidate action matrices from episode buffer states.
+        
+        For each episode in the buffer, generates multiple candidate actions and creates
+        composite state-action pairs for evaluation.
+
+        :param buffer: List of Episode objects representing states.
+        :type buffer: list[Episode]
+        :param algorithm: Algorithm for candidate action generation, defaults to "latin"
+        :type algorithm: str, optional
+        :return: List of candidate episodes with state-action combinations.
+        :rtype: list[Episode]
         """
         candidate_episodes = []
         for episode in buffer:
@@ -508,14 +768,16 @@ class QUtilityModel(LearnedUtilityModel):
         return candidate_episodes
 
     def obtain_maximum_value(self, q_values):
-        """
-        Given Q-values from generate_candidates_matrix, return the maximum Q-value for each state.
+        """Extract maximum Q-value for each state from flattened candidate Q-values.
         
-        Args:
-            q_values: np.ndarray of shape (n_states * candidate_actions, 1) or (n_states * candidate_actions,)
-        
-        Returns:
-            np.ndarray of shape (n_states,) with maximum Q-value for each state
+        Given Q-values computed for all candidate actions, returns the maximum Q-value
+        for each state by reshaping and reducing across the candidate actions dimension.
+
+        :param q_values: Flattened array of Q-values of shape (n_states * candidate_actions,)
+        :type q_values: np.ndarray
+        :return: Array of maximum Q-values for each state of shape (n_states,)
+        :rtype: np.ndarray
+        :raises ValueError: If Q-values length is not divisible by candidate_actions
         """
         q_values = np.asarray(q_values).flatten()
         
@@ -549,12 +811,19 @@ class DefaultUtilityModelLearner(Learner):
         return None
     
     def call(self, x):
+        """Returns a vector of ones as the utility
+
+        :param x: Input data for prediction.
+        :type x: np.ndarray
+        :return: Model predictions as a numpy array.
+        :rtype: np.ndarray
+        """        
         output_len = x.shape[0]
         y = np.ones((output_len))
         return y
 
 class NoveltyUtilityModelLearner(Learner):
-    """ Default Utility Model class, used when no specific utility model is defined.
+    """ Novelty Utility Model class, used as an exploration method.
     This model provides higher utility to states not visited previously.
     """
     def __init__(self, node:UtilityModel, buffer, **params):
@@ -566,12 +835,29 @@ class NoveltyUtilityModelLearner(Learner):
         return None
 
     def call(self, x):
+        """Returns the computed novelty for the input data
+
+        :param x: Input data for prediction.
+        :type x: np.ndarray
+        :return: Model predictions as a numpy array.
+        :rtype: np.ndarray
+        """   
         previous_episodes, _ = self.buffer.get_train_samples()
         # Compute novelty based on previous episodes
         novelty = self.compute_novelty(previous_episodes, x)
         return novelty
     
     def compute_novelty(self, previous_episodes, candidate_episodes):
+        """
+        Compute normalized novelty scores for candidate episodes relative to previously seen episodes.
+
+        :param previous_episodes: Array of prior episode embeddings with shape (N, D); if empty or None, all candidates are maximally novel.
+        :type previous_episodes: np.ndarray | None
+        :param candidate_episodes: Array of candidate episode embeddings with shape (M, D).
+        :type candidate_episodes: np.ndarray
+        :return: Novelty scores in [0, 1] for each candidate, where higher values indicate greater novelty.
+        :rtype: np.ndarray
+        """
         # previous_episodes: (N, D), candidate_episodes: (M, D)
         if previous_episodes is None or len(previous_episodes) == 0:
             # If no previous episodes, all candidates are maximally novel

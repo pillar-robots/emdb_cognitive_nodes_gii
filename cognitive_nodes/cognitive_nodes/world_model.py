@@ -4,7 +4,7 @@ from copy import deepcopy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 
-from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, ANNLearner_torch, Evaluator
+from cognitive_nodes.deliberative_model import DeliberativeModel, Learner, ANNLearner, Evaluator
 from cognitive_nodes.episodic_buffer import EpisodicBuffer
 from simulators.scenarios_2D import SimpleScenario, EntityType
 from cognitive_node_interfaces.msg import Perception, Actuation, SuccessRate
@@ -37,8 +37,14 @@ class WorldModel(DeliberativeModel):
         self.activation.activation = 1.0
 
     def predict(self, input_episodes: list[Episode]) -> list[Episode]:
+        """Predict output episodes from input episodes using the world model.
+
+        :param input_episodes: List of episodes containing old perceptions and actions.
+        :type input_episodes: list[Episode]
+        :return: List of predicted episodes with updated perceptions.
+        :rtype: list[Episode]
+        """        
         self.get_logger().warning("The base WorldModel class does not implement any prediction. Returning the input episodes.")
-        #self.get_logger().info(f"DEBUG input episodes - {input_episodes}")
         output_episodes = [Episode(perception=deepcopy(episode.old_perception), action=deepcopy(episode.action)) for episode in input_episodes]
         return output_episodes
 
@@ -82,7 +88,7 @@ class WorldModelLearned(WorldModel):
             outputs = ["perception"],
         )
 
-        self.learner = ANNLearner_torch(self, self.episodic_buffer, **learner_params)
+        self.learner = ANNLearner(self, self.episodic_buffer, **learner_params)
 
         self.confidence_evaluator = EvaluatorWorldModel(self, self.learner, self.episodic_buffer)
 
@@ -91,6 +97,13 @@ class WorldModelLearned(WorldModel):
         self.validation_split = validation_split
 
     def predict(self, input_episodes: list[Episode]) -> list[Episode]:
+        """Predict output episodes from input episodes using the world model.
+
+        :param input_episodes: List of episodes containing old perceptions and actions.
+        :type input_episodes: list[Episode]
+        :return: List of predicted episodes with updated perceptions.
+        :rtype: list[Episode]
+        """  
         if not self.episodic_buffer.input_labels or not self.episodic_buffer.output_labels:
             self.get_logger().warning("Episodic buffer input or output labels are not defined. Returning the input episodes.")
             output_episodes = [Episode(perception=deepcopy(episode.old_perception), action=deepcopy(episode.action)) for episode in input_episodes]
@@ -163,6 +176,9 @@ class EvaluatorWorldModel(Evaluator):
         self.prediction_error_publisher = self.node.create_publisher(SuccessRate, f"world_model/{self.node.name}/prediction_error", 0)
 
     def evaluate(self):
+        """
+        Obtain the MSE error of the World Model according to the test samples in the episodic buffer.
+        """        
         x_test, y_test = self.buffer.get_test_samples()
         self.prediction_error = self.learner.evaluate(x_test, y_test)
         self.node.get_logger().info(f"World Model Prediction Error: {self.prediction_error}")

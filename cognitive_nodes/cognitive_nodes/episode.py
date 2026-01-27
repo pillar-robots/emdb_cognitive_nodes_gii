@@ -6,9 +6,31 @@ from core.utils import perception_dict_to_msg, perception_msg_to_dict, actuation
 
 class Episode:
     """
-    Episode class used as STM (Short Term Memory) for the cognitive architecture.
+    Episode class that represents a single episode in the cognitive architecture.
     """
     def __init__(self, old_perception=None, parent_policy='', action=None, perception=None, reward_list=None) -> None:
+        """Initialize a new Episode.
+
+        Captures the transition from a previous perceptual state to a new one,
+        the selected action, the governing parent policy, and any observed rewards.
+
+        :param old_perception: Perceptual state before the action/transition. If None, an empty dict is used.
+        :type old_perception: dict
+        :param parent_policy: Identifier of the parent policy responsible for the decision. Defaults to ''.
+        :type parent_policy: str
+        :param action: The chosen action. If None, a new Action() is created.
+        :type action: Action | None
+        :param perception: Perceptual state after the action/transition. If None, an empty dict is used.
+        :type perception: dict
+        :param reward_list: Mapping of goal identifiers to reward values. If None, an empty dict is used.
+        :type reward_list: dict[str, float] | None
+
+        :return: None
+        :rtype: None
+
+        Notes:
+        - old_ltm_state and ltm_state are initialized as empty dicts to store long-term memory snapshots.
+        """        
 
 
         self.old_perception=old_perception if old_perception is not None else {}
@@ -27,6 +49,22 @@ class Action:
     Action class used to represent an action in the cognitive architecture.
     """
     def __init__(self, actuation={}, policy_id=None) -> None:
+        """Initialize an Action.
+
+        Represents the actuation payload to execute and the policy identifier
+        that produced it.
+
+        :param actuation: Mapping of actuator keys to command values. Defaults to {}.
+        :type actuation: dict
+        :param policy_id: Identifier of the parent policy. If None, it is set to 0.
+        :type policy_id: int | None
+
+        :return: None
+        :rtype: None
+
+        Notes:
+        - policy_id is normalized to int; None becomes 0.
+        """        
         self.actuation = actuation
         self.policy_id = policy_id if policy_id is not None else 0
 
