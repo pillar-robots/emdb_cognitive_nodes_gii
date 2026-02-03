@@ -38,18 +38,18 @@ class ProspectionDrive(Drive, LTMSubscription):
         self.goals_info=None
         self.min_pnode_rate=min_pnode_rate
         self.min_goal_rate=min_goal_rate
-        self.configure_prospection_suscriptor(self.LTM_id)
+        self.configure_prospection_suscriptor(self.LTM_id, self.cbgroup_client)
         self.get_knowledge_service = self.create_service(GetKnowledge, 'drive/' + str(
             name) + '/get_knowledge', self.get_knowledge_callback, callback_group=self.cbgroup_server)
     
-    def configure_prospection_suscriptor(self, ltm):
+    def configure_prospection_suscriptor(self, ltm, callback_group):
         """
         Setup of the ProspectionDrive class. Subscribes to the LTM nodes and initializes the dictionaries for the P-Nodes, Goals, and knowledge found.
 
         :param ltm: ID of the LTM to subscribe to.
         :type ltm: str
-        """        
-        self.configure_ltm_subscription(ltm)
+        """
+        self.configure_ltm_subscription(ltm, callback_group)
         self.pnode_subscriptions = {}
         self.goal_subscriptions = {}
         self.learned_pnodes=[]

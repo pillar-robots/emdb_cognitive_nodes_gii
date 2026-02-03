@@ -9,7 +9,7 @@ import inspect
 
 from core.cognitive_node import CognitiveNode
 from core.service_client import ServiceClient, ServiceClientAsync
-from cognitive_node_interfaces.srv import SetActivation, IsReached, GetReward, GetActivation, Evaluate, SendSpace, ContainsSpace
+from cognitive_node_interfaces.srv import AddPoint, SetActivation, IsReached, GetReward, GetActivation, Evaluate, SendSpace, ContainsSpace
 from cognitive_node_interfaces.msg import Evaluation, Perception, SuccessRate
 from cognitive_processes_interfaces.msg import ControlMsg
 from cognitive_nodes.space import PointBasedSpace
@@ -71,6 +71,13 @@ class Goal(CognitiveNode):
             callback_group=self.cbgroup_reward
         )
 
+        self.add_point_service = self.create_service(
+            AddPoint,
+            'goal/' + str(name) + '/add_point',
+            self.add_point_callback,
+            callback_group=self.cbgroup_server
+        )
+
         self.send_goal_space_service = self.create_service(
             SendSpace, 
             'goal/' + str(name) + '/send_space', 
@@ -96,6 +103,26 @@ class Goal(CognitiveNode):
         response.set = True
         return response
     
+    def add_point_callback(self, request, response):
+        """
+        Callback method for adding a point (or anti-point) to a specific Goal.
+
+        :param request: The request that contains the point that is added and its confidence.
+        :type request: cognitive_node_interfaces.srv.AddPoint.Request
+        :param response: The response indicating if the point was added to the Goal.
+        :type response: cognitive_node_interfaces.srv.AddPoint.Response
+        :return: The response indicating if the point was added to the Goal.
+        :rtype: cognitive_node_interfaces.srv.AddPoint.Response
+        """
+        self.point_msg = request.point
+        confidence = request.confidence
+        point = perception_msg_to_dict(self.point_msg)
+        self.add_point(point,confidence)
+        self.get_logger().info('Adding point: ' + str(point) + 'Confidence: ' + str(confidence))
+        response.added = True
+
+        return response
+
     def send_goal_space_callback(self, request, response):
         """
         Callback that sends the goal space data.
@@ -178,6 +205,17 @@ class Goal(CognitiveNode):
         :raises NotImplementedError: If the method is not overridden in a subclass.
         """
         raise NotImplementedError
+    
+    def add_point(self, point, confidence):
+        """
+        Placeholder method in base goals. To be implemented in derived classes.
+        
+        :param point: The point that is added to the Goal.
+        :type point: dict
+        :param confidence: Indicates if the perception added is a point or an antipoint.
+        :type confidence: float
+        """
+        return False
 
 
 class GoalObjectInBoxStandalone(Goal):

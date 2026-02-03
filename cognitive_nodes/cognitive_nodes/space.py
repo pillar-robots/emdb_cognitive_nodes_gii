@@ -1,5 +1,6 @@
 from math import isclose
 import numpy
+import threading
 from numpy.lib.recfunctions import structured_to_unstructured, require_fields
 import pandas as pd
 from sklearn import svm
@@ -13,7 +14,7 @@ from core.utils import separate_perceptions
 class Space(object):
     """A n-dimensional state space."""
 
-    def __init__(self, ident=None, **kwargs):
+    def __init__(self, ident=None, random_seed=0, **kwargs):
         """Init attributes when a new object is created.
 
         :param ident: The name of the space.
@@ -23,12 +24,13 @@ class Space(object):
         self.parent_space = None
         self.logger = get_logger("space_" + str(ident))
         self.logger.info(f"CREATING SPACE: {ident}")
+        self.rng = numpy.random.default_rng(random_seed)
 
 
 class PointBasedSpace(Space):
     """A state space based on points."""
 
-    def __init__(self, size=15000, **kwargs):
+    def __init__(self, size=30000, **kwargs):
         """
         Init attributes when a new object is created.
 
@@ -708,7 +710,7 @@ class ANNSpace(PointBasedSpace):
         Init attributes when a new object is created.
         """
         #GPU USAGE TEST
-        tf.config.set_visible_devices([], 'GPU') #Temporary disable of GPU
+        tf.config.set_visible_devices([], 'GPU') #TODO: Handle GPU usage properly
         '''
         #tf.debugging.set_log_device_placement(True) #Detailed log in every TF operation
         gpus = tf.config.list_physical_devices('GPU')
@@ -727,10 +729,14 @@ class ANNSpace(PointBasedSpace):
         # self.n_splits = 5
         self.batch_size = 50
         self.epochs = 50
-        self.max_data = 400
-        self.first_data = 0
+        self.max_data = 2000
+        self.sampled_points = 200
+        self.train_every = 20
+        self.new_points = 0
         # Define the Neural Network's model
         self.model = None
+        #self.semaphore = threading.Semaphore()
+
 
         # Initialize variables
         self.there_are_points = False
@@ -781,6 +787,7 @@ class ANNSpace(PointBasedSpace):
         :return: The position of the added point.
         :rtype: int
         """
+        #self.semaphore.acquire()
         pos = None
 
         if confidence > 0.0:
@@ -805,32 +812,40 @@ class ANNSpace(PointBasedSpace):
                 )
                 raise RuntimeError("LTM operation cannot continue :-(")    
 
-            prediction = (self.model.call(point)[0][0]*2)-1 #Pass from [0,1] to [-1, 1]
+            #prediction = (self.model.call(point)[0][0]*2)-1 #Pass from [0,1] to [-1, 1]
             pos = super().add_point(perception, confidence)
+            self.new_points += 1
 
-            members = structured_to_unstructured(
-                self.members[0 : self.size][list(self.members.dtype.names)]
-            )
-            memberships = self.memberships[0 : self.size].copy()
-            memberships[memberships > 0] = 1.0
-            memberships[memberships <= 0] = 0.0
+            if self.new_points>=self.train_every: #HACK: Train only every certain number of new points
+                self.logger.info(f"Training on {self.new_points}") #TODO: Pass pnode logger to space
+                if self.size > self.max_data:
+                    self.logger.info(f"Using last {self.max_data} points for training.") #TODO: Pass pnode logger to space
+                    first_data = self.size - self.max_data
+                else:
+                    first_data = 0
 
+                members = structured_to_unstructured(
+                    self.members[first_data : self.size][list(self.members.dtype.names)]
+                )
+                memberships = self.memberships[first_data : self.size].copy()
+                memberships[memberships > 0] = 1.0
+                memberships[memberships <= 0] = 0.0
 
-            if self.size >= self.max_data:
-                self.first_data = self.size - self.max_data
+                members_size = len(members)
+                n_samples = min(self.sampled_points, members_size)
+                idx = self.rng.choice(members_size, size=n_samples, replace=False)
 
-            if abs(confidence - prediction)>0.4: #HACK: Select a proper training threshold
-                # Node.get_logger().logdebug(f"Training... {self.ident}") #TODO: Pass pnode logger to space
-                X = members[self.first_data : self.size]
-                Y = memberships[self.first_data : self.size]
+                X = members[idx]
+                Y = memberships[idx]
                 n_0 = int(len(Y[Y == 0.0]))
                 n_1 = int(len(Y[Y == 1.0]))
                 weight_for_0 = (
-                    (1 / n_0) * ((self.size - self.first_data) / 2.0) if n_0 != 0 else 1.0
+                    (1 / n_0) * (X.shape[0] / 2.0) if n_0 != 0 else 1.0
                 )
                 weight_for_1 = (
-                    (1 / n_1) * ((self.size - self.first_data) / 2.0) if n_1 != 0 else 1.0
+                    (1 / n_1) * (X.shape[0] / 2.0) if n_1 != 0 else 1.0
                 )
+                self.logger.info(f"Training data distribution: 0s={n_0}, 1s={n_1}, weights: 0={weight_for_0}, 1={weight_for_1}")
                 class_weight = {0: weight_for_0, 1: weight_for_1}
                 self.model.fit(
                     x=X,
@@ -840,10 +855,11 @@ class ANNSpace(PointBasedSpace):
                     verbose=0,
                     class_weight=class_weight,
                 )
+                self.new_points = 0
 
         else:
             pos = super().add_point(perception, confidence)
-
+        #self.semaphore.release()
         return pos
 
     def get_probability(self, perception):
@@ -855,6 +871,7 @@ class ANNSpace(PointBasedSpace):
         :return: The activation value.
         :rtype: float
         """
+        #self.semaphore.acquire()
         candidate_point = self.create_structured_array(perception, self.members.dtype, 1)
         self.copy_perception(candidate_point, 0, perception)
         point = tf.convert_to_tensor(structured_to_unstructured(candidate_point))
@@ -867,4 +884,21 @@ class ANNSpace(PointBasedSpace):
                 act = 1.0
         else:
             act = 0.0
+        #self.semaphore.release()
         return min(act, self.parent_space.get_probability(perception)) if self.parent_space else act
+
+    def save_model(self, path):
+        """
+        Save the trained model to the specified path.
+
+        :param path: The file path where the model should be saved.
+        :type path: str
+        """
+        if self.model:
+            fullpath = path + ".keras"
+            self.model.save(fullpath)
+            self.logger.info(f"Model saved to {fullpath}")
+            return True, fullpath
+        else:
+            self.logger.warning("No model to save.")
+            return False, ""
