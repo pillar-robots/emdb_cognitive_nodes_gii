@@ -224,7 +224,7 @@ class Learner:
         Constructor of the Learner class.
 
         :param buffer: Episodic buffer to use.
-        :type buffer: generic_model.EpisodicBuffer
+        :type buffer: cognitive_nodes.episodic_buffer.EpisodicBuffer
         """        
         self.node = node
         self.model=None
@@ -771,7 +771,7 @@ class Evaluator:
         :param learner: Learner instance to use for predictions.
         :type learner: Learner
         :param buffer: Episodic buffer to use.
-        :type buffer: generic_model.EpisodicBuffer
+        :type buffer: cognitive_nodes.episodic_buffer.EpisodicBuffer
         """
         self.node = node
         self.learner = learner

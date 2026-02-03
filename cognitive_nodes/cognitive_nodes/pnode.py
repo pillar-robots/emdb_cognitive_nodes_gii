@@ -125,7 +125,7 @@ class PNode(CognitiveNode):
         :param request: The request that contains the point that is added and its confidence.
         :type request: cognitive_node_interfaces.srv.AddPoint.Request
         :param response: The response indicating if the point was added to the P-Node.
-        :type respone: core_interfaces.srv.AddPoint.Response
+        :type response: cognitive_node_interfaces.srv.AddPoint.Response
         :return: The response indicating if the point was added to the P-Node.
         :rtype: cognitive_node_interfaces.srv.AddPoint.Response
         """
