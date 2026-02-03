@@ -408,6 +408,24 @@ class LearnedUtilityModel(UtilityModel):
 
         self.get_logger().info(f"Utility Model created: {self.name}")
 
+    def calculate_activation(self, perception = None, activation_list=None):
+        """Calculate the activation level of the utility model based on perception or activation inputs.
+
+        :param perception: Perception data to use for activation calculation, defaults to None
+        :type perception: dict, optional
+        :param activation_list: List of activations from connected nodes to aggregate, defaults to None
+        :type activation_list: list, optional
+        :return: None
+        :rtype: None
+        """
+        if self.update_semaphore.acquire(blocking=False):        
+            if activation_list and self.learner.configured:
+                self.calculate_activation_max(activation_list)
+            else:
+                self.activation.activation=0.0
+                self.activation.timestamp=self.get_clock().now().to_msg()
+            self.update_semaphore.release()
+
     def setup_model(self, trace_length, max_iterations, candidate_actions, ltm_id, min_traces=1, max_traces=50, max_antitraces=10, **params):
         """Sets up the Learned Utility Model by initializing the episodic buffer, learner, and confidence evaluator.
 
@@ -504,11 +522,11 @@ class LearnedUtilityModel(UtilityModel):
             self.episodic_buffer.add_episode(episode, max(rewards, default=0.0))
             if any(rewards):
                 self.get_logger().info(f"New trace added to episodic buffer. Total traces: {self.episodic_buffer.n_traces}, Min traces: {self.episodic_buffer.min_traces}")
-                ltm_update_thread = threading.Thread(target=self.update_ltm, args=(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache))
+                ltm_update_thread = threading.Thread(target=self.update_ltm_and_train, args=(episode.old_perception, episode.perception, self.name, episode.reward_list, self.deliberation.LTM_cache))
                 ltm_update_thread.start()
-                self.train_step()
+                
 
-    def update_ltm(self, old_perception, perception, policy, reward_list, ltm_cache):
+    def update_ltm_and_train(self, old_perception, perception, policy, reward_list, ltm_cache):
         """Update the Long-Term Memory cache with new reward basis information.
         This method updates the Long-Term Memory (LTM) cache with new reward basis information
         based on the provided perceptions, policy, and reward list. It uses a semaphore to ensure
@@ -526,6 +544,7 @@ class LearnedUtilityModel(UtilityModel):
         """
         self.update_semaphore.acquire()
         self.deliberation.update_pnodes_reward_basis(old_perception, perception, policy, reward_list, ltm_cache)
+        self.train_step()
         self.update_semaphore.release()
         
 
